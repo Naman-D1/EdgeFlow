@@ -1,4 +1,5 @@
 import type { MotionClass } from '../utils/temporalSpeculation';
+import type { BBoxVerdict } from '../utils/bboxStability';
 
 export type PipelineStage = 'raw' | 'stage1_motion' | 'stage2_vectors' | 'stage3_inference';
 
@@ -42,6 +43,10 @@ export interface MotionObject {
   temporalClass: MotionClass;
   temporalConfidence: number; // 1 - temporalScore
   predictedPath: { x: number; y: number }[]; // speculated future positions
+  // v2.1: bbox rigidity & geometric stability outputs
+  bboxChaos: number; // 0 = stable box, 1 = chaotic
+  bboxVerdict: BBoxVerdict;
+  bboxAreaFrac: number; // mean box area / frame area
   // Stage 3 output
   aiClassification?: string;
   aiConfidence?: number;
@@ -67,6 +72,10 @@ export interface FilterParameters {
   strideFrequencyMin: number; // Human stride range min Hz
   strideFrequencyMax: number; // Human stride range max Hz
   enableTemporal: boolean; // v2: gate on trajectory predictability
+  enableSizeGate: boolean; // v2.1: drop tracks smaller than minAreaFrac
+  enableRigidity: boolean; // v2.1: drop tracks whose box geometry is chaotic (off by default: unvalidated on real footage)
+  maxBBoxChaos: number; // v2.1: drop tracks whose box geometry is more chaotic than this
+  minAreaFrac: number; // v2.1: drop tracks smaller than this fraction of the frame (too small to matter)
   maxErraticScore: number; // v2: drop tracks scoring above this (0..1). Calibrated on simulator only.
 }
 
