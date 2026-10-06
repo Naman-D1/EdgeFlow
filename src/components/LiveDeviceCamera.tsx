@@ -19,6 +19,40 @@ import {
 } from 'lucide-react';
 import { FilterParameters } from '../types/pipeline';
 import { OpenCVOpticalFlowEngine, RealFlowResult } from '../utils/opencvAdapter';
+import type { TrackReport } from '../utils/blobTracker';
+
+// Draw one box per tracked object: green = pass to next stage, red dashed = confidently trash,
+// grey = not enough history yet (never treated as trash).
+function drawTracks(ctx: CanvasRenderingContext2D, tracks: TrackReport[], sx: number, sy: number) {
+  ctx.save();
+  for (const t of tracks) {
+    const x = t.box.x * sx, y = t.box.y * sy, w = t.box.width * sx, h = t.box.height * sy;
+    const color = t.state === 'pass' ? '#10b981' : t.state === 'drop' ? '#f43f5e' : '#94a3b8';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = t.state === 'pass' ? 3 : 2;
+    ctx.setLineDash(t.state === 'pass' ? [] : t.state === 'drop' ? [4, 4] : [2, 4]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+    if (t.state !== 'drop' && t.predicted.length > 0) {
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x + w / 2, y + h / 2);
+      for (const p of t.predicted) ctx.lineTo(p.x * sx, p.y * sy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const label = `#${t.id} ${t.state === 'pass' ? 'KEEP' : t.state === 'drop' ? 'TRASH' : 'WATCHING'}`;
+    ctx.font = '10px "JetBrains Mono", monospace';
+    const lw = ctx.measureText(label).width + 10;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.fillRect(x, Math.max(0, y - 16), lw, 15);
+    ctx.fillStyle = color;
+    ctx.fillText(label, x + 5, Math.max(0, y - 16) + 11);
+  }
+  ctx.restore();
+}
 
 interface LiveDeviceCameraProps {
   filterParams: FilterParameters;
@@ -40,7 +74,8 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
   const [showVectors, setShowVectors] = useState<boolean>(true);
   const [showMask, setShowMask] = useState<boolean>(true);
   const [isOpenCvReady, setIsOpenCvReady] = useState<boolean>(false);
-  const [virtualScenario, setVirtualScenario] = useState<'human' | 'flutter_keys' | 'cloth_debris'>('human');
+  const [virtualScenario, setVirtualScenario] = useState<'human' | 'flutter_keys' | 'cloth_debris' | 'mixed'>('human');
+  const [perObject, setPerObject] = useState<boolean>(true);
 
   // Live telemetry state for UI
   const [telemetry, setTelemetry] = useState<RealFlowResult>({
@@ -238,7 +273,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
               varianceThreshold: filterParams.varianceThreshold,
               minNetDisplacement: filterParams.minNetDisplacement,
               maxAspectDeformation: filterParams.maxAspectDeformation,
-            });
+            }, perObject ? { gate: filterParams } : undefined);
 
             setTelemetry(result);
 
@@ -247,7 +282,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
             const scaleY = h / offH;
 
             // Render Stage 1 Pixel Mask
-            if (showMask && result.hasMotion && result.boundingBox) {
+            if (showMask && !result.trackingMode && result.hasMotion && result.boundingBox) {
               const b = result.boundingBox;
               ctx.fillStyle = 'rgba(234, 179, 8, 0.22)';
               ctx.strokeStyle = 'rgba(234, 179, 8, 0.7)';
@@ -291,8 +326,12 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
               });
             }
 
-            // Render Stage 3 Bounding Box & Annotation
-            if (result.hasMotion && result.boundingBox) {
+            if (result.trackingMode && result.tracks) {
+              drawTracks(ctx, result.tracks, scaleX, scaleY);
+            }
+
+            // Render Stage 3 Bounding Box & Annotation (single global box; legacy mode only)
+            if (!result.trackingMode && result.hasMotion && result.boundingBox) {
               const b = result.boundingBox;
               const bx = b.x * scaleX;
               const by = b.y * scaleY;
@@ -343,7 +382,26 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
         offCtx.fillRect(0, offH * 0.65, offW, offH * 0.35);
 
         // Render moving target based on scenario
-        if (virtualScenario === 'human') {
+        if (virtualScenario === 'mixed') {
+          // Person walking on the left half while a fluttering object and tumbling debris share the frame
+          const px = (Math.sin(t * 0.8) * 0.2 + 0.28) * offW;
+          offCtx.fillStyle = '#38bdf8';
+          offCtx.fillRect(px - 15, offH * 0.55 - 37, 30, 75);
+          offCtx.fillStyle = '#f8fafc';
+          offCtx.beginPath();
+          offCtx.arc(px, offH * 0.55 - 49, 10, 0, Math.PI * 2);
+          offCtx.fill();
+          const mx = offW * 0.78 + Math.sin(t * 12) * 28;
+          const my = offH * 0.25 + Math.cos(t * 16) * 22;
+          offCtx.fillStyle = '#f43f5e';
+          offCtx.beginPath();
+          offCtx.arc(mx, my, 14, 0, Math.PI * 2);
+          offCtx.fill();
+          const dw = 40 + Math.sin(t * 8) * 28, dh = 40 + Math.cos(t * 7) * 28;
+          const dx = offW * 0.68 + Math.sin(t * 1.5) * 22;
+          offCtx.fillStyle = '#fbbf24';
+          offCtx.fillRect(dx - dw / 2, offH * 0.55 - dh / 2, dw, dh);
+        } else if (virtualScenario === 'human') {
           // Human walking smoothly across the screen: Coherent translation, stable aspect ratio
           const walkX = (Math.sin(t * 0.8) * 0.35 + 0.5) * offW;
           const walkY = offH * 0.55;
@@ -385,7 +443,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
             varianceThreshold: filterParams.varianceThreshold,
             minNetDisplacement: filterParams.minNetDisplacement,
             maxAspectDeformation: filterParams.maxAspectDeformation,
-          });
+          }, perObject ? { gate: filterParams } : undefined);
 
           setTelemetry(result);
 
@@ -406,7 +464,11 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
             });
           }
 
-          if (result.hasMotion && result.boundingBox) {
+          if (result.trackingMode && result.tracks) {
+            drawTracks(ctx, result.tracks, scaleX, scaleY);
+          }
+
+          if (!result.trackingMode && result.hasMotion && result.boundingBox) {
             const b = result.boundingBox;
             ctx.strokeStyle = result.stage2Passed ? '#10b981' : '#f43f5e';
             ctx.lineWidth = 2.5;
@@ -442,7 +504,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [mode, isFrozen, isMirrored, showVectors, showMask, filterParams, virtualScenario]);
+  }, [mode, isFrozen, isMirrored, showVectors, showMask, filterParams, virtualScenario, perObject]);
 
   return (
     <div className="space-y-6">
@@ -557,8 +619,28 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
                   >
                     Debris Tumbling
                   </button>
+                  <button
+                    onClick={() => setVirtualScenario('mixed')}
+                    className={`px-2 py-1 text-[11px] font-medium rounded ${
+                      virtualScenario === 'mixed' ? 'bg-slate-800 text-white' : 'text-slate-400'
+                    }`}
+                  >
+                    Mixed Scene
+                  </button>
                 </div>
               )}
+
+              <button
+                onClick={() => setPerObject((v) => !v)}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                  perObject
+                    ? 'bg-emerald-950/70 text-emerald-300 border-emerald-800/80'
+                    : 'bg-slate-800 text-slate-300 border-slate-700'
+                }`}
+                title="Track each moving object separately (instead of one global box)"
+              >
+                {perObject ? 'Per-object tracking: ON' : 'Per-object tracking: OFF'}
+              </button>
 
               <button
                 onClick={stopCamera}
@@ -713,6 +795,22 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
 
         {/* Live Vector Telemetry & Decision Inspector (Right 4 cols) */}
         <div className="lg:col-span-4 space-y-4">
+          {telemetry.trackingMode && (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-2">
+              <h4 className="text-xs font-semibold text-slate-200">Tracked objects ({telemetry.tracks?.length ?? 0})</h4>
+              {(telemetry.tracks ?? []).length === 0 && (
+                <p className="text-[11px] text-slate-500">Nothing is moving.</p>
+              )}
+              {(telemetry.tracks ?? []).map((t) => (
+                <div key={t.id} className="text-[11px] font-mono flex justify-between gap-2 border-t border-slate-800 pt-1">
+                  <span className={t.state === 'pass' ? 'text-emerald-400' : t.state === 'drop' ? 'text-rose-400' : 'text-slate-400'}>
+                    #{t.id} {t.state === 'pass' ? 'KEEP' : t.state === 'drop' ? 'TRASH' : 'WATCHING'}
+                  </span>
+                  <span className="text-slate-500 truncate" title={t.reason}>{t.reason}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="p-5 bg-slate-900/70 border border-slate-800 rounded-xl space-y-4">
             <div className="flex items-start justify-between">
               <div>

@@ -138,18 +138,33 @@ These magnitudes (arm swing, noise) are assumptions used for stress-testing, not
 
 ---
 
+## v2.2: per-object tracking on the live camera path
+
+The live path used to put one box around everything that moved. It now has an optional per-object mode (on by default, toggle "Per-object tracking" above the camera view) in `src/utils/blobTracker.ts`:
+
+1. Active macroblocks are grouped into blobs (union-find; `linkRadius` bridges the gaps frame differencing leaves inside an object).
+2. Blobs are matched to tracks greedily, nearest to each track's predicted position, with a per-pair gate. Unmatched tracks coast on their prediction for a few frames.
+3. Each track keeps its own 24-sample box history and runs the same gates as the simulator: angular variance, net displacement, aspect deformation, temporal speculation, size gate, and (optionally) rigidity.
+4. Votes over the last 5 frames decide the state, and the vote is deliberately asymmetric: 4 drop votes to start dropping a track, 2 or fewer to release it. A track is `WATCHING` until it has 8 samples, and `WATCHING` is never treated as trash. When in doubt, it passes.
+
+Real boxes jitter by a pixel or two, which made slow smooth movers look erratic to the temporal gate. `speculate()` now takes an optional `noiseFloor` (px); prediction error below it is ignored. The tracker uses 4 px at 320x240; the simulator keeps 0.
+
+`npx tsx scripts/trackerSim.ts -v` runs synthetic scenes (person, vehicle, flutter, tumbling cloth, mixed) through the real engine and prints per-scene verdict rates.
+
+**What the synthetic runs showed** (320x240, no sensor noise, correlated textures): a lone person and a lone vehicle are kept ~100% / ~98% of frames; tumbling cloth is dropped 90-100%; a 14x14 flutterer never reaches Stage 2 because Stage 1's 0.45% gate removes it first. When trash and a real object overlap or cross, blobs merge and the real object's verdict degrades (person + flutter: kept 68%; vehicle + cloth: kept 35%). In the in-app virtual scenes the person is kept ~75% of sampled frames, and the debris scene still shows brief KEEP states. These are synthetic scenes written by the same author as the thresholds: they check the logic, not accuracy on real footage.
+
 ## Known limitations
 
-- **The live-camera path does not use v2.** It draws a single bounding box around *everything* that changed in the frame, with no per-object tracking, so a person and a plastic bag in view merge into one object. Temporal scoring needs per-object tracks. (`historyTrajectories` in `opencvAdapter.ts` is collected but not used in the decision.)
+- **Per-object tracking is new and only tested on synthetic video.** Objects that touch or cross become one blob, and the real one can inherit the trash verdict. With tracking switched off, the live path still uses one global box. The 4 px noise floor and the 0.1 temporal cutoff were tuned on synthetic clips and need real footage.
 - **The simulator partly grades itself.** Stage 3 labels and `strideFrequency` are looked up from the object's `type`, not computed from motion, and the object kinematics were written to look like their class. Simulator results demonstrate the pipeline's logic, not detection accuracy.
 - **Stage 3 is a stub.** No model runs; "AI classification" is a lookup.
 - **Thresholds are unvalidated** against real footage (Stage 2 defaults, the v2 cutoff, and the v2.1 chaos and size cutoffs alike).
-- **v2.1 inherits the box quality problem.** Rigidity is only meaningful if the box tracks the object; the live path's single global box does not.
+- **v2.1 inherits the box quality problem.** Rigidity needs a box that follows the object; frame-difference boxes flicker at the edges.
 - **No automated tests.**
 
 ## Roadmap
 
-1. **Blob tracker for the live path:** group active macroblocks into blobs, match them to tracks using `speculate()`'s predicted positions, and run the Stage 2 gate per track.
+1. **Merge/split handling** for the tracker (crossing objects), and a Stage 1 gate that does not hide small objects.
 2. **Calibrate on real clips** (people, vehicles, debris) and replace hand-picked thresholds with fitted ones, including the v2.1 chaos cutoff, where real human box variation decides whether it can drop tracks safely.
 3. **Gait periodicity** as a human-specific feature. This needs a longer history than the current 24-frame window.
 4. **A real Stage 3** model, and measured (not modelled) hardware numbers.

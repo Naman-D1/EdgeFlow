@@ -27,8 +27,13 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 export function speculate(
   hist: TrackSample[],
   horizon = 10,
-  opts = { minFrames: 8, erraticCut: 0.1, minStraight: 0.45 }
+  opts: { minFrames: number; erraticCut: number; minStraight: number; noiseFloor?: number } =
+    { minFrames: 8, erraticCut: 0.1, minStraight: 0.45 }
 ): TemporalProfile {
+  // noiseFloor (px): expected measurement jitter of the position. 0 for noiseless tracks (simulator).
+  // Real boxes flicker by a pixel or two, which would make slow smooth movers look erratic;
+  // below the floor we cannot tell smooth from erratic, so we treat it as smooth (benefit of doubt).
+  const floor = opts.noiseFloor ?? 0;
   const n = hist.length;
   if (n < opts.minFrames) {
     return { relPredError: 0, turnRate: 0, straightness: 1, erraticScore: 0.5,
@@ -47,10 +52,12 @@ export function speculate(
   for (let i = 1; i < steps.length; i++) {
     errSum += Math.hypot(steps[i].dx - steps[i-1].dx, steps[i].dy - steps[i-1].dy);
   }
-  const relPredError = errSum / (steps.length - 1) / (meanStep + 1e-6);
+  // second difference of i.i.d. position noise σ has magnitude ≈ 2.4σ per step; remove that expectation
+  const meanErr = Math.max(0, errSum / (steps.length - 1) - 2.4 * floor);
+  const relPredError = meanErr / (meanStep + 1e-6);
 
   // 2) turn rate on frames that are actually moving
-  const minMove = 0.15; // px/frame, matches Stage 1 speed gate
+  const minMove = Math.max(0.15, 2 * floor); // px/frame; below the noise floor a heading is meaningless
   const turns: number[] = [];
   for (let i = 1; i < steps.length; i++) {
     if (stepLen[i] > minMove && stepLen[i-1] > minMove) {
