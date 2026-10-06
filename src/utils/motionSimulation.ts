@@ -1,3 +1,4 @@
+import { speculate } from './temporalSpeculation';
 import { MotionObject, MacroblockVector, FilterParameters, ScenarioType } from '../types/pipeline';
 
 export const DEFAULT_FILTER_PARAMS: FilterParameters = {
@@ -7,6 +8,8 @@ export const DEFAULT_FILTER_PARAMS: FilterParameters = {
   minPersistenceFrames: 5,
   strideFrequencyMin: 1.0,
   strideFrequencyMax: 3.5,
+  enableTemporal: true,
+  maxErraticScore: 0.1,
 };
 
 export function createInitialScenarioObjects(scenario: ScenarioType, width: number, height: number): MotionObject[] {
@@ -101,6 +104,10 @@ function createObject(
     aspectDeformation: 0,
     strideFrequency: 0,
     stage2Passed: false,
+    temporalScore: 0,
+    temporalClass: 'warmup',
+    temporalConfidence: 0,
+    predictedPath: [],
     inferenceTriggered: false,
   };
 }
@@ -220,6 +227,13 @@ export function updateObjectsKinematics(
     const hasMotion = speed > 0.15;
     const pixelDeltaScore = Math.min(1.0, speed / 4.0);
 
+    // v2 Temporal speculation: how predictable has this track been, and where is it going?
+    const temporal = speculate(
+      newHistory.map((h) => ({ x: h.x, y: h.y, w: h.w, h: h.h })),
+      12,
+      { minFrames: 8, erraticCut: params.maxErraticScore, minStraight: 0.45 }
+    );
+
     // Stage 2 Check: Vector Coherence & Trajectory Profiling (~3-5% CPU)
     let vectorVariance = 0;
     let netDisplacementRatio = 1.0;
@@ -287,6 +301,9 @@ export function updateObjectsKinematics(
       } else if (!aspectPass) {
         stage2Passed = false;
         dropReason = 'CHAOTIC_DEFORMATION (Deforming Debris)';
+      } else if (params.enableTemporal && temporal.motionClass === 'erratic') {
+        stage2Passed = false;
+        dropReason = `UNPREDICTABLE_TRAJECTORY (Temporal ${temporal.erraticScore.toFixed(2)} > max ${params.maxErraticScore.toFixed(2)})`;
       } else {
         stage2Passed = true;
         dropReason = 'COHERENT_TRAJECTORY (Human / Kinematic Match)';
@@ -336,6 +353,10 @@ export function updateObjectsKinematics(
       strideFrequency,
       stage2Passed,
       dropReason,
+      temporalScore: temporal.erraticScore,
+      temporalClass: temporal.motionClass,
+      temporalConfidence: temporal.confidence,
+      predictedPath: params.enableTemporal ? temporal.predicted : [],
       inferenceTriggered,
       aiClassification,
       aiConfidence,

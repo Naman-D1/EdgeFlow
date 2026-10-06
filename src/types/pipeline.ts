@@ -1,3 +1,5 @@
+import type { MotionClass } from '../utils/temporalSpeculation';
+
 export type PipelineStage = 'raw' | 'stage1_motion' | 'stage2_vectors' | 'stage3_inference';
 
 export type ScenarioType = 
@@ -35,6 +37,11 @@ export interface MotionObject {
   strideFrequency: number; // Hz (0 for non-periodic)
   stage2Passed: boolean;
   dropReason?: string;
+  // v2: temporal speculation outputs
+  temporalScore: number; // 0 = smooth/predictable, 1 = erratic
+  temporalClass: MotionClass;
+  temporalConfidence: number; // 1 - temporalScore
+  predictedPath: { x: number; y: number }[]; // speculated future positions
   // Stage 3 output
   aiClassification?: string;
   aiConfidence?: number;
@@ -59,6 +66,8 @@ export interface FilterParameters {
   minPersistenceFrames: number; // Min consecutive frames required (e.g. 4)
   strideFrequencyMin: number; // Human stride range min Hz
   strideFrequencyMax: number; // Human stride range max Hz
+  enableTemporal: boolean; // v2: gate on trajectory predictability
+  maxErraticScore: number; // v2: drop tracks scoring above this (0..1). Calibrated on simulator only.
 }
 
 export interface HardwareProfile {

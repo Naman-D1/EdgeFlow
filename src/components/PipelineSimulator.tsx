@@ -215,6 +215,25 @@ export const PipelineSimulator: React.FC<PipelineSimulatorProps> = ({
 
     // 2. Draw Simulated Objects
     objects.forEach((obj) => {
+      // v2: speculated future path (world coords, drawn before the rotated object frame)
+      if (obj.predictedPath.length > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(obj.x, obj.y);
+        obj.predictedPath.forEach((p) => ctx.lineTo(p.x, p.y));
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = `rgba(56, 189, 248, ${0.15 + 0.6 * obj.temporalConfidence})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        const end = obj.predictedPath[obj.predictedPath.length - 1];
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(end.x, end.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(56, 189, 248, ${0.2 + 0.7 * obj.temporalConfidence})`;
+        ctx.fill();
+        ctx.restore();
+      }
+
       ctx.save();
       ctx.translate(obj.x, obj.y);
       ctx.rotate(obj.angle);
@@ -610,6 +629,10 @@ export const PipelineSimulator: React.FC<PipelineSimulatorProps> = ({
         aspectDeformation: 0,
         strideFrequency: 2.0,
         stage2Passed: true,
+        temporalScore: 0,
+        temporalClass: 'warmup',
+        temporalConfidence: 0,
+        predictedPath: [],
         dropReason: 'MANUAL_INJECTION',
         inferenceTriggered: true,
       };
@@ -903,6 +926,29 @@ export const PipelineSimulator: React.FC<PipelineSimulatorProps> = ({
                         }`}
                         style={{
                           width: `${Math.min(100, (selectedObject.aspectDeformation / (filterParams.maxAspectDeformation * 2)) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Metric 4 (v2): Temporal predictability */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Temporal Erratic Score:</span>
+                      <span className="font-mono tabular-nums text-slate-200">
+                        {selectedObject.temporalScore.toFixed(3)}
+                        <span className="text-slate-500 text-[10px] ml-1">
+                          / max {filterParams.maxErraticScore.toFixed(2)} · {selectedObject.temporalClass.replace('_', ' ')}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          selectedObject.temporalScore <= filterParams.maxErraticScore ? 'bg-sky-500' : 'bg-rose-500'
+                        }`}
+                        style={{
+                          width: `${Math.min(100, (selectedObject.temporalScore / (filterParams.maxErraticScore * 2)) * 100)}%`,
                         }}
                       />
                     </div>
