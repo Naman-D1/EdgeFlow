@@ -153,6 +153,17 @@ Real boxes jitter by a pixel or two, which made slow smooth movers look erratic 
 
 **What the synthetic runs showed** (320x240, no sensor noise, correlated textures): a lone person and a lone vehicle are kept ~100% / ~98% of frames; tumbling cloth is dropped 90-100%; a 14x14 flutterer never reaches Stage 2 because Stage 1's 0.45% gate removes it first. When trash and a real object overlap or cross, blobs merge and the real object's verdict degrades (person + flutter: kept 68%; vehicle + cloth: kept 35%). In the in-app virtual scenes the person is kept ~75% of sampled frames, and the debris scene still shows brief KEEP states. These are synthetic scenes written by the same author as the thresholds: they check the logic, not accuracy on real footage.
 
+### Evaluating on CDNet 2014
+
+`scripts/evalCDNet.ts` runs the engine on CDNet-2014-layout sequences and reports, per sequence and overall, object recall, empty frames forwarded, and total frames forwarded for: forward-all, Stage 1 only, the legacy single-box path, and per-object tracking (strict and lenient). Foreground is ground truth label 255, so dynamic background (trees, water) counts as trash and real objects as keep.
+
+```
+npm i --no-save jpeg-js pngjs
+npx tsx scripts/evalCDNet.ts path/to/dynamicBackground
+```
+
+Frames are scaled to at most 320 px wide. The harness was checked for plumbing on generated JPEG/PNG data; it has not yet been run on the real dataset.
+
 ## Known limitations
 
 - **Per-object tracking is new and only tested on synthetic video.** Objects that touch or cross become one blob, and the real one can inherit the trash verdict. With tracking switched off, the live path still uses one global box. The 4 px noise floor and the 0.1 temporal cutoff were tuned on synthetic clips and need real footage.
