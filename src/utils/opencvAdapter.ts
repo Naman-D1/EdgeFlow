@@ -103,6 +103,15 @@ export class OpenCVOpticalFlowEngine {
 
   public cameraMotion = false;
 
+  /** Forget the previous frame and all tracks (e.g. when a new video starts). */
+  public resetState(): void {
+    this.prevLumaBuffer = null;
+    this.historyTrajectories = [];
+    this.tracker.reset();
+    this.grid = null;
+    this.cameraMotion = false;
+  }
+
   public getTracker(): BlobTracker {
     return this.tracker;
   }

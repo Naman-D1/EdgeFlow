@@ -233,3 +233,11 @@ The Stage 1 gate (share of pixels that must change before blobs are extracted) w
 | 0.12 | 65% | 82% | 80% | 59% |
 
 0.12 scores better on the labels but lets the synthetic small-flutter scene through (94% pass), so 0.25 is the default. MOG2 + blob on the same frames: recall 80%, junk skipped 46%. All synthetic guards and the app demo scenes still pass at 0.25. Remaining gap: small distant objects (parking lot recall is still low) and debris at night (storm clip is far from empty).
+
+## Analyze a video file (v2.2.4)
+
+The Live Camera tab has an **Analyze Video File** button. Pick any video your browser can play (MP4/H.264 or WebM). It runs the same engine and the same settings as the live camera, draws the per-object boxes on the video, and fills a results panel: share of frames forwarded (KEEP), KEEP or watching, frames with a TRASH track, frames skipped as camera motion, and the top reasons tracks were dropped. **Download CSV** gives one row per analysed frame.
+
+Frames are analysed at 10 per second of video time (the rate the thresholds were evaluated at), at 320 px wide with the clip's own aspect ratio, whatever the file's frame rate. Playback can be 1x, 2x or 4x; at higher speeds a slow computer may skip some samples, and the panel shows how many frames were actually analysed. Nothing is uploaded: the file is read by the browser only.
+
+Check: the 267-frame night-storm clip, analysed in headless Chromium at 4x, gave 26.0% KEEP and 59.0% KEEP-or-watching, against 26.2% and 59.2% from `scripts/runFrames.ts`.

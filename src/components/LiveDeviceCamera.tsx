@@ -54,6 +54,19 @@ function drawTracks(ctx: CanvasRenderingContext2D, tracks: TrackReport[], sx: nu
   ctx.restore();
 }
 
+const SAMPLE_FPS = 10;
+
+interface VideoStats {
+  frames: number;          // sampled frames analysed
+  keep: number;            // frames with at least one KEEP track
+  lenient: number;         // frames with at least one KEEP or WATCHING track
+  trash: number;           // frames with at least one TRASH track
+  camera: number;          // frames skipped as camera motion
+  reasons: Record<string, number>; // TRASH reasons, in track-frames
+  seconds: number;         // video time reached
+}
+const emptyStats = (): VideoStats => ({ frames: 0, keep: 0, lenient: 0, trash: 0, camera: 0, reasons: {}, seconds: 0 });
+
 interface LiveDeviceCameraProps {
   filterParams: FilterParameters;
 }
@@ -66,7 +79,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
   const engineRef = useRef<OpenCVOpticalFlowEngine | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
-  const [mode, setMode] = useState<'idle' | 'webcam' | 'virtual'>('idle');
+  const [mode, setMode] = useState<'idle' | 'webcam' | 'virtual' | 'file'>('idle');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [isMirrored, setIsMirrored] = useState<boolean>(true);
@@ -76,6 +89,19 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
   const [isOpenCvReady, setIsOpenCvReady] = useState<boolean>(false);
   const [virtualScenario, setVirtualScenario] = useState<'human' | 'flutter_keys' | 'cloth_debris' | 'mixed'>('human');
   const [perObject, setPerObject] = useState<boolean>(true);
+
+  // Uploaded-video analysis (mode 'file'): frames are sampled at SAMPLE_FPS of video time,
+  // the rate the thresholds were evaluated at, whatever the file's own frame rate is.
+  const [fileName, setFileName] = useState<string>('');
+  const [fileDone, setFileDone] = useState<boolean>(false);
+  const [viewAspect, setViewAspect] = useState<number>(4 / 3);
+  const [speed, setSpeed] = useState<number>(1);
+  const [videoStats, setVideoStats] = useState<VideoStats>(emptyStats());
+  const statsRef = useRef<VideoStats>(emptyStats());
+  const rowsRef = useRef<string[]>([]);
+  const lastProcRef = useRef<number>(-1);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
 
   // Live telemetry state for UI
   const [telemetry, setTelemetry] = useState<RealFlowResult>({
@@ -208,9 +234,85 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
+      if (objectUrlRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
     }
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    setViewAspect(4 / 3);
+    setFileDone(false);
     setMode('idle');
     setCameraError(null);
+  };
+
+  // Analyse an uploaded video file with the same engine and settings as the live camera.
+  const startVideoFile = (file: File) => {
+    stopCamera();
+    const video = videoRef.current;
+    const off = offscreenCanvasRef.current;
+    if (!video || !off) return;
+    setCameraError(null);
+    setFileName(file.name);
+    setFileDone(false);
+    setIsFrozen(false);
+    setIsMirrored(false);
+    statsRef.current = emptyStats();
+    rowsRef.current = [];
+    lastProcRef.current = -1;
+    setVideoStats(emptyStats());
+    engineRef.current?.resetState();
+
+    const url = URL.createObjectURL(file);
+    objectUrlRef.current = url;
+    video.srcObject = null;
+    video.src = url;
+    video.muted = true;
+    video.playsInline = true;
+    video.loop = false;
+    video.playbackRate = speed;
+    video.onloadedmetadata = () => {
+      const vw = video.videoWidth || 320, vh = video.videoHeight || 240;
+      // Analyse at 320 px wide with the clip's own aspect ratio (what the evaluation scripts use).
+      off.width = 320;
+      off.height = Math.max(40, Math.round((320 * vh) / vw));
+      setViewAspect(vw / vh);
+      const c = canvasRef.current;
+      if (c) { c.width = 640; c.height = Math.round((640 * vh) / vw); }
+      video.play().catch((e) => console.warn('video.play() rejected:', e));
+    };
+    video.onended = () => setFileDone(true);
+    video.onerror = () => {
+      setCameraError('This browser could not decode that video file. Try an MP4 (H.264) or WebM.');
+      stopCamera();
+    };
+    setMode('file');
+  };
+
+  const downloadCsv = () => {
+    const csv = 'video_seconds,keep,keep_or_watching,trash,camera_motion,tracks\n' + rowsRef.current.join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `${fileName || 'video'}-edgeflow.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const replayFile = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    statsRef.current = emptyStats();
+    rowsRef.current = [];
+    lastProcRef.current = -1;
+    setVideoStats(emptyStats());
+    setFileDone(false);
+    engineRef.current?.resetState();
+    video.currentTime = 0;
+    video.play().catch(() => undefined);
   };
 
   // Start Virtual Camera Mode
@@ -231,6 +333,17 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
     }
   };
 
+  // Freeze also pauses an uploaded video; the speed buttons set its playback rate.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || mode !== 'file') return;
+    if (isFrozen) v.pause();
+    else if (!v.ended) v.play().catch(() => undefined);
+  }, [isFrozen, mode]);
+  useEffect(() => {
+    if (videoRef.current && mode === 'file') videoRef.current.playbackRate = speed;
+  }, [speed, mode]);
+
   // Main processing loop
   useEffect(() => {
     if (mode === 'idle' || isFrozen) return;
@@ -246,6 +359,21 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
     const loop = () => {
       if (isFrozen) return;
 
+      // File mode: analyse one frame per 1/SAMPLE_FPS s of video time, not per screen refresh.
+      if (mode === 'file') {
+        const v = videoRef.current;
+        if (!v || v.readyState < 2) {
+          animFrameRef.current = requestAnimationFrame(loop);
+          return;
+        }
+        if (v.currentTime < lastProcRef.current) lastProcRef.current = -1; // seeked back
+        if (v.currentTime - lastProcRef.current < 1 / SAMPLE_FPS - 1e-6) {
+          animFrameRef.current = requestAnimationFrame(loop);
+          return;
+        }
+        lastProcRef.current = v.currentTime;
+      }
+
       const w = canvas.width;
       const h = canvas.height;
       const offW = offCanvas.width;
@@ -254,12 +382,12 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
       // Clear main canvas overlay
       ctx.clearRect(0, 0, w, h);
 
-      if (mode === 'webcam') {
+      if (mode === 'webcam' || mode === 'file') {
         const video = videoRef.current;
         if (video && video.readyState >= 2) {
           // Render current video frame to offscreen canvas for vector analysis
           offCtx.save();
-          if (isMirrored) {
+          if (mode === 'webcam' && isMirrored) {
             offCtx.translate(offW, 0);
             offCtx.scale(-1, 1);
           }
@@ -276,6 +404,24 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
             }, perObject ? { gate: filterParams } : undefined);
 
             setTelemetry(result);
+
+            if (mode === 'file') {
+              const st = statsRef.current;
+              const tr = result.tracks ?? [];
+              const cam = !!engineRef.current.cameraMotion;
+              const k = tr.some((t) => t.state === 'pass');
+              const l = tr.some((t) => t.state !== 'drop');
+              const d = tr.some((t) => t.state === 'drop');
+              st.frames++;
+              st.seconds = video.currentTime;
+              if (k) st.keep++;
+              if (l) st.lenient++;
+              if (d) st.trash++;
+              if (cam) st.camera++;
+              for (const t of tr) if (t.state === 'drop') { const key = t.reason.split(' (')[0]; st.reasons[key] = (st.reasons[key] ?? 0) + 1; }
+              rowsRef.current.push(`${video.currentTime.toFixed(2)},${+k},${+l},${+d},${+cam},${tr.length}`);
+              if (st.frames % 5 === 0) setVideoStats({ ...st, reasons: { ...st.reasons } });
+            }
 
             // Scale factor between offscreen analysis and display canvas
             const scaleX = w / offW;
@@ -537,6 +683,11 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
                   Virtual Camera Test Stream
                 </span>
               )}
+              {mode === 'file' && (
+                <span className="text-[10px] font-mono text-violet-300 truncate max-w-[220px]">
+                  Video file: {fileName}
+                </span>
+              )}
             </h3>
             <p className="text-xs text-slate-400">
               Computes optical flow vectors in real time to filter noise and pass structured human motion.
@@ -561,6 +712,13 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
               >
                 <MonitorPlay className="w-4 h-4 text-cyan-400" />
                 <span>Virtual Demo Camera</span>
+              </button>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-3.5 py-2 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors flex items-center gap-2 cursor-pointer"
+              >
+                <Play className="w-4 h-4 text-violet-300" />
+                <span>Analyze Video File</span>
               </button>
             </>
           ) : (
@@ -589,6 +747,37 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
                     title="Switch Camera (Front / Rear)"
                   >
                     <RotateCw className="w-4 h-4" />
+                  </button>
+                </>
+              )}
+
+              {mode === 'file' && (
+                <>
+                  <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                    {[1, 2, 4].map((sp) => (
+                      <button
+                        key={sp}
+                        onClick={() => setSpeed(sp)}
+                        className={`px-2 py-1 text-[11px] font-medium rounded ${speed === sp ? 'bg-slate-800 text-white' : 'text-slate-400'}`}
+                        title="Playback speed (analysis still samples every 0.1 s of video time)"
+                      >
+                        {sp}x
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={replayFile}
+                    className="px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Replay</span>
+                  </button>
+                  <button
+                    onClick={downloadCsv}
+                    className="px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
+                    title="One row per analysed frame"
+                  >
+                    Download CSV
                   </button>
                 </>
               )}
@@ -683,11 +872,65 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
         </div>
       )}
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        data-testid="video-file-input"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) startVideoFile(f);
+          e.target.value = '';
+        }}
+      />
+
+      {mode === 'file' && (
+        <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-xs space-y-3" data-testid="video-results">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-semibold text-slate-200">
+              Video results {fileDone ? '(finished)' : '(analysing)'}: {videoStats.frames} frames sampled at {SAMPLE_FPS}/s, {videoStats.seconds.toFixed(1)} s of video
+            </span>
+            <span className="text-slate-500">Frames are judged on tracks, so "forwarded" means it would reach Stage 3.</span>
+          </div>
+          {(() => {
+            const n = Math.max(1, videoStats.frames);
+            const pct = (x: number) => ((100 * x) / n).toFixed(1) + '%';
+            const cells: [string, string, string][] = [
+              ['Forwarded (KEEP)', pct(videoStats.keep), 'text-emerald-400'],
+              ['KEEP or watching', pct(videoStats.lenient), 'text-slate-200'],
+              ['Has TRASH track', pct(videoStats.trash), 'text-rose-400'],
+              ['Camera motion (skipped)', pct(videoStats.camera), 'text-amber-300'],
+            ];
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {cells.map(([label, value, color]) => (
+                  <div key={label} className="bg-slate-950 border border-slate-800 rounded-lg p-3">
+                    <span className="text-slate-500 block text-[10px]">{label}</span>
+                    <span className={`font-mono text-base ${color}`}>{value}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+          {Object.keys(videoStats.reasons).length > 0 && (
+            <p className="text-slate-400">
+              Why tracks were dropped (track-frames):{' '}
+              {Object.entries(videoStats.reasons)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 4)
+                .map(([r, c]) => `${r} ${c}`)
+                .join(', ')}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Main Viewport Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Camera Viewport (Left 8 cols) */}
         <div className="lg:col-span-8 space-y-3">
-          <div className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950 shadow-2xl aspect-[4/3]">
+          <div style={{ aspectRatio: String(viewAspect) }} className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950 shadow-2xl">
             {/* Live Hardware Video Element (rendered directly for guaranteed 60fps & no black frames) */}
             <video
               ref={videoRef}
@@ -695,8 +938,8 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
               playsInline
               muted
               className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
-                mode === 'webcam' ? 'opacity-100' : 'opacity-0 pointer-events-none'
-              } ${isMirrored ? 'scale-x-[-1]' : ''}`}
+                (mode === 'webcam' || mode === 'file') ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              } ${mode === 'webcam' && isMirrored ? 'scale-x-[-1]' : ''}`}
             />
 
             {/* Canvas Overlay for Vectors & Bounding Boxes */}
@@ -733,6 +976,13 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
                   >
                     <MonitorPlay className="w-4 h-4 text-cyan-400" />
                     <span>Virtual Demo Stream</span>
+                  </button>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-4 py-2 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors flex items-center gap-2 cursor-pointer"
+                  >
+                    <Play className="w-4 h-4 text-violet-300" />
+                    <span>Analyze Video File</span>
                   </button>
                 </div>
               </div>
