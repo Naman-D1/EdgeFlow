@@ -27,7 +27,7 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 export function speculate(
   hist: TrackSample[],
   horizon = 10,
-  opts: { minFrames: number; erraticCut: number; minStraight: number; noiseFloor?: number } =
+  opts: { minFrames: number; erraticCut: number; minStraight: number; noiseFloor?: number; linearFit?: boolean } =
     { minFrames: 8, erraticCut: 0.1, minStraight: 0.45 }
 ): TemporalProfile {
   // noiseFloor (px): expected measurement jitter of the position. 0 for noiseless tracks (simulator).
@@ -74,7 +74,24 @@ export function speculate(
   const straightness = path > 0 ? Math.min(1, net / path) : 0;
 
   // combine: prediction error and turning drive the score
-  const sPred = clamp01((relPredError - 0.05) / 0.45);
+  let sPred = clamp01((relPredError - 0.05) / 0.45);
+  if (opts.linearFit) {
+    // Windowed straight-line fit. One-step prediction error amplifies box jitter (a second difference
+    // of noisy positions); the residual of a line fitted over the whole window averages it out, while
+    // real erratic motion still leaves a large residual relative to how far the object actually went.
+    const w = Math.min(n, 16), h0 = n - w;
+    let mt = 0, mx = 0, my = 0;
+    for (let i = 0; i < w; i++) { mt += i; mx += hist[h0 + i].x; my += hist[h0 + i].y; }
+    mt /= w; mx /= w; my /= w;
+    let stt = 0, stx = 0, sty = 0;
+    for (let i = 0; i < w; i++) { stt += (i - mt) ** 2; stx += (i - mt) * (hist[h0 + i].x - mx); sty += (i - mt) * (hist[h0 + i].y - my); }
+    const bx = stx / stt, by = sty / stt;
+    let ss = 0;
+    for (let i = 0; i < w; i++) ss += (hist[h0 + i].x - (mx + bx * (i - mt))) ** 2 + (hist[h0 + i].y - (my + by * (i - mt))) ** 2;
+    const rms = Math.max(0, Math.sqrt(ss / w) - 0.5 * floor);
+    const disp = Math.hypot(bx, by) * (w - 1);
+    sPred = clamp01((rms / (disp + 2 * floor + 1e-6) - 0.1) / 0.4);
+  }
   const sTurn = clamp01(turnRate / 0.8);
   const erraticScore = 0.65 * sPred + 0.35 * sTurn;
 

@@ -229,12 +229,13 @@ export interface TrackerOptions {
   dropLeave: number;    // at or below this many drop votes a dropped track passes again
   center: 'bbox' | 'mass';
   horizon: number;      // frames of speculated path
+  linearFit: boolean;   // temporal gate uses a windowed line-fit residual instead of one-step prediction error
   noiseFloor: number;   // px of box-position jitter the temporal gate ignores (edge flicker, quantisation)
 }
 
 export const DEFAULT_TRACKER_OPTS: TrackerOptions = {
   maxHistory: 24, maxCoast: 6, confirmFrames: 8, gateScale: 0.75,
-  voteWindow: 5, dropEnter: 4, dropLeave: 2, center: 'bbox', horizon: 12, noiseFloor: 4,
+  voteWindow: 5, dropEnter: 4, dropLeave: 2, center: 'bbox', horizon: 12, noiseFloor: 4, linearFit: false,
 };
 
 interface Track {
@@ -364,7 +365,7 @@ export class BlobTracker {
 
     // windowed gates over this track's own history
     const temporal = speculate(t.hist, o.horizon, {
-      minFrames: 8, erraticCut: gate.maxErraticScore, minStraight: 0.45, noiseFloor: o.noiseFloor,
+      minFrames: 8, erraticCut: gate.maxErraticScore, minStraight: 0.45, noiseFloor: o.noiseFloor, linearFit: o.linearFit,
     });
     m.temporalScore = temporal.erraticScore;
     m.temporalClass = temporal.motionClass;

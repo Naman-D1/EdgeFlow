@@ -35,48 +35,66 @@ function render(boxes: { x: number; y: number; w: number; h: number }[]): ImageD
   return { data: d, width: W, height: H, colorSpace: 'srgb' } as ImageData;
 }
 let cx = 100, cy = 120;
-const synth: Record<string, ImageData[]> = { person: [], vehicle: [], cloth: [] };
+const synth: Record<string, ImageData[]> = { person: [], vehicle: [], cloth: [], shaker: [] };
+let sx = 200, sy = 100;
 for (let t = 0; t < 160; t++) {
   synth.person.push(render([{ x: bounce(30, 2.6, t, 0, 280), y: 70, w: 40, h: 90 }]));
   synth.vehicle.push(render([{ x: bounce(10, 5, t, 0, 250), y: 150, w: 70, h: 35 }]));
   cx += (rnd() - .5) * 22; cy += (rnd() - .5) * 22; cx = Math.min(240, Math.max(20, cx)); cy = Math.min(140, Math.max(20, cy));
   const k = 1 + (rnd() - .5) * .7; synth.cloth.push(render([{ x: cx, y: cy, w: 60 * k, h: 60 / k }]));
+  sx += (rnd() - .5) * 26; sy += (rnd() - .5) * 26; sx = Math.min(280, Math.max(120, sx)); sy = Math.min(190, Math.max(30, sy)); synth.shaker.push(render([{ x: sx, y: sy, w: 34, h: 34 }]));
 }
 
-interface Cfg { nf: number; erratic: number; aspect: number; variance: number }
-function run(frames: ImageData[], cfg: Cfg, from = 0) {
-  const gate = { ...DEFAULT_FILTER_PARAMS, maxErraticScore: cfg.erratic, maxAspectDeformation: cfg.aspect, varianceThreshold: cfg.variance };
-  const th = { varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate.minNetDisplacement, maxAspectDeformation: gate.maxAspectDeformation };
-  const e = new OpenCVOpticalFlowEngine(); e.getTracker().opts.noiseFloor = cfg.nf;
+
+interface Cfg {
+  nf: number; erratic: number; aspect: number; variance: number; minNet: number;
+  voteWindow: number; dropEnter: number; dropLeave: number; confirm: number; gateScale: number; link: number; fit: boolean;
+}
+function run(frames: ImageData[], cfg: Cfg) {
+  const gate = { ...DEFAULT_FILTER_PARAMS, maxErraticScore: cfg.erratic, maxAspectDeformation: cfg.aspect, varianceThreshold: cfg.variance, minNetDisplacement: cfg.minNet };
+  const th = { varianceThreshold: cfg.variance, minNetDisplacement: cfg.minNet, maxAspectDeformation: cfg.aspect };
+  const e = new OpenCVOpticalFlowEngine();
+  Object.assign(e.getTracker().opts, { noiseFloor: cfg.nf, voteWindow: cfg.voteWindow, dropEnter: cfg.dropEnter, dropLeave: cfg.dropLeave, confirmFrames: cfg.confirm, gateScale: cfg.gateScale, linearFit: cfg.fit });
+  // per-frame (trackId, state) so halves can be scored separately
+  const per: { id: number; s: string }[][] = [];
+  frames.forEach(img => { const r = e.processFrame(img, 20, th, { gate, linkRadius: cfg.link }); per.push((r.tracks ?? []).map(k => ({ id: k.id, s: k.state }))); });
+  return per;
+}
+// keep/trash share over tracks that last >=20 frames within [a,b)
+function score(per: { id: number; s: string }[][], a: number, b: number) {
   const life = new Map<number, { f: number; p: number; d: number }>();
-  frames.forEach((img, i) => {
-    const r = e.processFrame(img, 20, th, { gate });
-    if (i < from) return;
-    for (const k of r.tracks ?? []) { const v = life.get(k.id) ?? { f: 0, p: 0, d: 0 }; v.f++; if (k.state === 'pass') v.p++; else if (k.state === 'drop') v.d++; life.set(k.id, v); }
-  });
+  for (let i = a; i < b; i++) for (const k of per[i]) { const v = life.get(k.id) ?? { f: 0, p: 0, d: 0 }; v.f++; if (k.s === 'pass') v.p++; else if (k.s === 'drop') v.d++; life.set(k.id, v); }
   let f = 0, p = 0, d = 0; for (const v of life.values()) if (v.f >= 20) { f += v.f; p += v.p; d += v.d; }
   return { keep: f ? p / f : 0, trash: f ? d / f : 0 };
 }
 const synthScore = (cfg: Cfg) => {
-  const a = run(synth.person.slice(0), cfg, 30), b = run(synth.vehicle, cfg, 30), c = run(synth.cloth, cfg, 30);
-  return { person: a.keep, vehicle: b.keep, clothDrop: c.trash };
+  const k = (n: string) => score(run(synth[n], cfg), 30, 160);
+  return { person: k('person').keep, vehicle: k('vehicle').keep, clothDrop: k('cloth').trash, shakerDrop: k('shaker').trash };
 };
+const guardOk = (g: ReturnType<typeof synthScore>) => g.person >= 0.95 && g.vehicle >= 0.95 && g.clothDrop >= 0.9 && g.shakerDrop >= 0.9;
 
-const defaults: Cfg = { nf: 4, erratic: DEFAULT_FILTER_PARAMS.maxErraticScore, aspect: DEFAULT_FILTER_PARAMS.maxAspectDeformation, variance: DEFAULT_FILTER_PARAMS.varianceThreshold };
-const grid: Cfg[] = [];
-for (const nf of [4, 6, 8]) for (const erratic of [0.3, 0.5, 0.8]) for (const aspect of [0.8, 1.2]) for (const variance of [38, 70, 110]) grid.push({ nf, erratic, aspect, variance });
-const rows = grid.map(cfg => ({ cfg, tune: run(real.slice(0, SPLIT), cfg), syn: synthScore(cfg) }));
-const fmt = (c: Cfg) => `noiseFloor ${c.nf}, erratic ${c.erratic}, aspect ${c.aspect}, variance ${c.variance}`;
-const eligible = rows.filter(r => r.syn.person >= 0.95 && r.syn.vehicle >= 0.95 && r.syn.clothDrop >= 0.9);
-eligible.sort((a, b) => (b.tune.keep - b.tune.trash) - (a.tune.keep - a.tune.trash));
-console.log(`eligible configs: ${eligible.length} of ${rows.length} (synthetic person/vehicle kept >=95%, cloth dropped >=90%)`);
-console.log('\nTop 5 on first half of real frames:');
-for (const r of eligible.slice(0, 5)) console.log(`  ${fmt(r.cfg)}  real keep ${(100 * r.tune.keep).toFixed(1)}% trash ${(100 * r.tune.trash).toFixed(1)}% | synth person ${(100 * r.syn.person).toFixed(0)}% vehicle ${(100 * r.syn.vehicle).toFixed(0)}% cloth dropped ${(100 * r.syn.clothDrop).toFixed(0)}%`);
-const best = eligible[0]?.cfg;
-const report = (name: string, cfg: Cfg) => {
-  const held = run(real, cfg, SPLIT), syn = synthScore(cfg);
-  console.log(`  ${name.padEnd(9)} ${fmt(cfg)}\n            HELD-OUT real half: keep ${(100 * held.keep).toFixed(1)}% trash ${(100 * held.trash).toFixed(1)}% | synth person ${(100 * syn.person).toFixed(0)}% vehicle ${(100 * syn.vehicle).toFixed(0)}% cloth dropped ${(100 * syn.clothDrop).toFixed(0)}%`);
-};
-console.log('\nHeld-out second half (not used for choosing):');
-report('defaults', defaults);
-if (best) report('selected', best); else console.log('  no config satisfied the synthetic guard rails');
+const defaults: Cfg = { nf: 4, erratic: DEFAULT_FILTER_PARAMS.maxErraticScore, aspect: DEFAULT_FILTER_PARAMS.maxAspectDeformation, variance: DEFAULT_FILTER_PARAMS.varianceThreshold,
+  minNet: DEFAULT_FILTER_PARAMS.minNetDisplacement, voteWindow: 5, dropEnter: 4, dropLeave: 2, confirm: 8, gateScale: 0.75, link: 1, fit: false };
+const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
+const N = +(process.argv[3] ?? 160);
+const cands: Cfg[] = [defaults];
+for (let i = 0; i < N; i++) {
+  const voteWindow = pick([3, 5, 7]);
+  cands.push({ nf: pick([3, 4, 5, 6, 8]), erratic: pick([0.1, 0.2, 0.3, 0.5, 0.7]), aspect: pick([0.28, 0.5, 0.8, 1.2]), variance: pick([38, 70, 110]), minNet: pick([0.2, 0.3, 0.42]),
+    voteWindow, dropEnter: pick([voteWindow, Math.max(2, voteWindow - 1)]), dropLeave: pick([1, 2, 3]), confirm: pick([8, 12, 16]), gateScale: pick([0.5, 0.75, 1.0]), link: pick([1, 2]), fit: process.env.FIT === '1' ? true : pick([false, true]) });
+}
+const fmt = (c: Cfg) => `nf ${c.nf} erratic ${c.erratic} aspect ${c.aspect} var ${c.variance} minNet ${c.minNet} vote ${c.dropEnter}/${c.voteWindow} leave ${c.dropLeave} confirm ${c.confirm} gate ${c.gateScale} link ${c.link} fit ${c.fit ? 'on' : 'off'}`;
+const rows = cands.map(cfg => { const per = run(real, cfg); return { cfg, A: score(per, 0, SPLIT), B: score(per, SPLIT, real.length), g: synthScore(cfg) }; });
+const val = (x: { keep: number; trash: number }) => x.keep - x.trash;
+const elig = rows.filter(r => guardOk(r.g));
+console.log(`candidates ${rows.length}, passing synthetic guard rails (person/vehicle kept >=95%, cloth and shaker dropped >=90%): ${elig.length}`);
+const show = (name: string, r: typeof rows[number]) => console.log(`  ${name.padEnd(8)} ${fmt(r.cfg)}\n           half A keep ${(100 * r.A.keep).toFixed(1)}% trash ${(100 * r.A.trash).toFixed(1)} | half B keep ${(100 * r.B.keep).toFixed(1)}% trash ${(100 * r.B.trash).toFixed(1)} | synth person ${(100 * r.g.person).toFixed(0)} vehicle ${(100 * r.g.vehicle).toFixed(0)} cloth-drop ${(100 * r.g.clothDrop).toFixed(0)} shaker-drop ${(100 * r.g.shakerDrop).toFixed(0)}`);
+console.log('\nTwo-fold check (pick on one half, score on the other):');
+const bestA = [...elig].sort((x, y) => val(y.A) - val(x.A))[0], bestB = [...elig].sort((x, y) => val(y.B) - val(x.B))[0];
+if (bestA) console.log(`  chosen on A -> scored on B: keep ${(100 * bestA.B.keep).toFixed(1)}% trash ${(100 * bestA.B.trash).toFixed(1)}%`);
+if (bestB) console.log(`  chosen on B -> scored on A: keep ${(100 * bestB.A.keep).toFixed(1)}% trash ${(100 * bestB.A.trash).toFixed(1)}%`);
+console.log(`  defaults, both halves:      A keep ${(100 * rows[0].A.keep).toFixed(1)}% trash ${(100 * rows[0].A.trash).toFixed(1)} | B keep ${(100 * rows[0].B.keep).toFixed(1)}% trash ${(100 * rows[0].B.trash).toFixed(1)}`);
+console.log('\nTop 5 by combined real score (in-sample on the whole clip):');
+const total = (r: typeof rows[number]) => val(r.A) + val(r.B);
+[...elig].sort((x, y) => total(y) - total(x)).slice(0, 5).forEach((r, i) => show(`#${i + 1}`, r));
+console.log('\nDefaults:'); show('defaults', rows[0]);
