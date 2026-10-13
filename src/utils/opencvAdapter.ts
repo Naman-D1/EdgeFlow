@@ -56,6 +56,8 @@ function summarizeTracks(tracks: TrackReport[]): Pick<RealFlowResult, 'stage2Pas
 export interface TrackingOptions {
   gate: TrackGateParams;
   linkRadius?: number;
+  /** Fraction of active macroblocks above which the frame is treated as camera motion (default 0.5). */
+  globalMotionFrac?: number;
 }
 
 export class OpenCVOpticalFlowEngine {
@@ -94,6 +96,8 @@ export class OpenCVOpticalFlowEngine {
     this.tracker.reset();
     this.grid = null;
   }
+
+  public cameraMotion = false;
 
   public getTracker(): BlobTracker {
     return this.tracker;
@@ -296,10 +300,21 @@ export class OpenCVOpticalFlowEngine {
     // Runs every frame (even idle ones) so tracks coast and age correctly.
     let trackReports: TrackReport[] | undefined;
     if (tracking && grid) {
-      const blobs = hasMotion
-        ? extractBlobs(grid, { linkRadius: tracking.linkRadius })
-        : [];
-      trackReports = this.tracker.update(blobs, tracking.gate, totalPixels, blockSize);
+      // Camera-motion guard: when most of the frame is active the camera itself moved
+      // (PTZ, shake). Per-object history is meaningless then, so drop it and start fresh.
+      const frac = vectors.length / Math.max(1, rows * cols);
+      const camCut = tracking.globalMotionFrac ?? 0.5;
+      if (frac > camCut) {
+        this.tracker.reset();
+        this.cameraMotion = true;
+        trackReports = [];
+      } else {
+        this.cameraMotion = false;
+        const blobs = hasMotion
+          ? extractBlobs(grid, { linkRadius: tracking.linkRadius })
+          : [];
+        trackReports = this.tracker.update(blobs, tracking.gate, totalPixels, blockSize);
+      }
     }
 
     if (!hasMotion || vectors.length < 2) {

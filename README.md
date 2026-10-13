@@ -206,3 +206,16 @@ The previous README documented **v0.1**, a Python/OpenCV prototype using MOG2 ba
 ## Credits
 
 Original EdgeFlow project: [soumyadhoke-sys](https://github.com/soumyadhoke-sys). v2 temporal speculation: Naman Sharma ([Naman-D1](https://github.com/Naman-D1)).
+
+## Camera-motion guard (v2.2.2)
+
+Found on a real PTZ parking-lot clip (Wikimedia, 316 s, 3163 frames at 10 fps): when the camera pans or zooms, most macroblocks go active at once and every track was judged TRASH. `processFrame` now treats a frame as camera motion when more than `globalMotionFrac` (default 0.5) of the grid is active, resets the tracker and reports no tracks for that frame (`engine.cameraMotion`).
+
+| Parking-lot clip, full 316 s | before | after |
+|---|---|---|
+| camera-motion frames | - | 221 (7.0%) |
+| tracks created | 125 | 20 |
+| long tracks: TRASH share | 39.8% | 6.0% |
+| long tracks: KEEP share | 39.5% | 37.0% |
+
+Synthetic scenes and the vtest clip are unchanged (guard never fires there). Caveats: no ground truth, one clip, cutoff 0.5 chosen from a 0.3-0.7 sweep that barely changed the result; a large object filling over half the frame would also be skipped.

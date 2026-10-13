@@ -23,6 +23,7 @@ const th = { varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate
 const eL = new OpenCVOpticalFlowEngine(), eT = new OpenCVOpticalFlowEngine();
 if (process.env.TRACKER) Object.assign(eT.getTracker().opts, JSON.parse(process.env.TRACKER)); // e.g. TRACKER='{"mergeRatio":0,"smoothAlpha":1}' for the old behaviour
 if (process.env.NF) eT.getTracker().opts.noiseFloor = +process.env.NF;
+let camFrames = 0;
 let n = 0, motion = 0, legacyFwd = 0, trackPass = 0, trackLenient = 0, anyDrop = 0, anyTrack = 0;
 const life = new Map<number, { frames: number; pass: number; drop: number; pend: number }>();
 let ms = 0;
@@ -39,9 +40,10 @@ for (const f of files) {
   const img = { data: new Uint8ClampedArray(p.data), width: p.width, height: p.height, colorSpace: 'srgb' } as ImageData;
   const L = eL.processFrame(img, 20, th);
   const t0 = performance.now();
-  const T = eT.processFrame(img, 20, { ...th, varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate.minNetDisplacement, maxAspectDeformation: gate.maxAspectDeformation }, { gate });
+  const T = eT.processFrame(img, 20, { ...th, varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate.minNetDisplacement, maxAspectDeformation: gate.maxAspectDeformation }, { gate, globalMotionFrac: process.env.GMF ? +process.env.GMF : undefined });
   ms += performance.now() - t0;
   n++;
+  if (eT.cameraMotion) camFrames++;
   if (L.hasMotion) motion++;
   if (L.stage2Passed) legacyFwd++;
   const tr = T.tracks ?? [];
@@ -66,6 +68,7 @@ const pc = (a: number) => (100 * a / n).toFixed(1) + '%';
 console.log(`frames ${n}  engine ${(ms / n).toFixed(2)} ms/frame (tracking mode)`);
 console.log(`Stage 1 motion detected : ${pc(motion)}`);
 console.log(`legacy single-box PASS   : ${pc(legacyFwd)}`);
+console.log(`camera-motion frames: ${camFrames} (${pc(camFrames)})`);
 console.log(`tracking: any KEEP track : ${pc(trackPass)}   keep-or-watching: ${pc(trackLenient)}   any TRASH track: ${pc(anyDrop)}`);
 const long = [...life.entries()].filter(([, v]) => v.frames >= 20).sort((a, b) => b[1].frames - a[1].frames);
 console.log('drop reasons (track-frames):', JSON.stringify(why));
