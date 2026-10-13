@@ -64,8 +64,10 @@ interface VideoStats {
   camera: number;          // frames skipped as camera motion
   reasons: Record<string, number>; // TRASH reasons, in track-frames
   seconds: number;         // video time reached
+  uniqueKept: number;      // distinct tracks that were ever KEEP (object count)
+  peakKept: number;        // most KEEP tracks visible in one frame
 }
-const emptyStats = (): VideoStats => ({ frames: 0, keep: 0, lenient: 0, trash: 0, camera: 0, reasons: {}, seconds: 0 });
+const emptyStats = (): VideoStats => ({ frames: 0, keep: 0, lenient: 0, trash: 0, camera: 0, reasons: {}, seconds: 0, uniqueKept: 0, peakKept: 0 });
 
 interface LiveDeviceCameraProps {
   filterParams: FilterParameters;
@@ -98,6 +100,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
   const [speed, setSpeed] = useState<number>(1);
   const [videoStats, setVideoStats] = useState<VideoStats>(emptyStats());
   const statsRef = useRef<VideoStats>(emptyStats());
+  const keptIdsRef = useRef<Set<number>>(new Set());
   const rowsRef = useRef<string[]>([]);
   const lastProcRef = useRef<number>(-1);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -265,6 +268,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
     rowsRef.current = [];
     lastProcRef.current = -1;
     setVideoStats(emptyStats());
+    keptIdsRef.current = new Set();
     engineRef.current?.resetState();
 
     const url = URL.createObjectURL(file);
@@ -309,6 +313,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
     rowsRef.current = [];
     lastProcRef.current = -1;
     setVideoStats(emptyStats());
+    keptIdsRef.current = new Set();
     setFileDone(false);
     engineRef.current?.resetState();
     video.currentTime = 0;
@@ -413,6 +418,10 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
               const l = tr.some((t) => t.state !== 'drop');
               const d = tr.some((t) => t.state === 'drop');
               st.frames++;
+              let nowKept = 0;
+              for (const t of tr) if (t.state === 'pass') { nowKept++; keptIdsRef.current.add(t.id); }
+              st.uniqueKept = keptIdsRef.current.size;
+              if (nowKept > st.peakKept) st.peakKept = nowKept;
               st.seconds = video.currentTime;
               if (k) st.keep++;
               if (l) st.lenient++;
@@ -901,8 +910,10 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
               ['KEEP or watching', pct(videoStats.lenient), 'text-slate-200'],
               ['Has TRASH track', pct(videoStats.trash), 'text-rose-400'],
               ['Camera motion (skipped)', pct(videoStats.camera), 'text-amber-300'],
+              ['Moving objects counted', String(videoStats.uniqueKept), 'text-sky-300'],
+              ['Most at once', String(videoStats.peakKept), 'text-sky-300'],
             ];
-            return (
+            return (<>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {cells.map(([label, value, color]) => (
                   <div key={label} className="bg-slate-950 border border-slate-800 rounded-lg p-3">
@@ -911,7 +922,10 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
                   </div>
                 ))}
               </div>
-            );
+              <p className="text-slate-500 text-[10px]">
+                Counts are moving objects that passed the filter (one per tracked blob). EdgeFlow does not identify what an object is, so in a scene of people this approximates a head count; a tight group may count as one, and a track that breaks and restarts is counted again, so the total can run high on long clips. \"Most at once\" is the steadier figure.
+              </p>
+            </>);
           })()}
           {Object.keys(videoStats.reasons).length > 0 && (
             <p className="text-slate-400">

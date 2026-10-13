@@ -241,3 +241,7 @@ The Live Camera tab has an **Analyze Video File** button. Pick any video your br
 Frames are analysed at 10 per second of video time (the rate the thresholds were evaluated at), at 320 px wide with the clip's own aspect ratio, whatever the file's frame rate. Playback can be 1x, 2x or 4x; at higher speeds a slow computer may skip some samples, and the panel shows how many frames were actually analysed. Nothing is uploaded: the file is read by the browser only.
 
 Check: the 267-frame night-storm clip, analysed in headless Chromium at 4x, gave 26.0% KEEP and 59.0% KEEP-or-watching, against 26.2% and 59.2% from `scripts/runFrames.ts`.
+
+
+### Object count (v2.2.5)
+The video results panel now shows **Moving objects counted** (distinct tracks that were ever KEEP) and **Most at once** (peak KEEP tracks in one frame). EdgeFlow does not recognise people, so this is a count of filtered moving objects. On the pedestrian test clip the total over-counts (51 tracks over 600 frames, because tracks break and restart) and the peak (5) is the more trustworthy number; on the parking-lot clip it gave 3 / 2.
