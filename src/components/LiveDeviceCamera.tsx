@@ -923,7 +923,7 @@ export const LiveDeviceCamera: React.FC<LiveDeviceCameraProps> = ({ filterParams
                 ))}
               </div>
               <p className="text-slate-500 text-[10px]">
-                Counts are moving objects that passed the filter (one per tracked blob). EdgeFlow does not identify what an object is, so in a scene of people this approximates a head count; a tight group may count as one, and a track that breaks and restarts is counted again, so the total can run high on long clips. \"Most at once\" is the steadier figure.
+                Counts are moving objects that passed the filter (one per tracked blob). EdgeFlow does not identify what an object is, so in a scene of people this approximates a head count; a tight group may count as one, and a track that breaks and restarts is counted again, so the total can run high on long clips. &quot;Most at once&quot; is the steadier figure.
               </p>
             </>);
           })()}
