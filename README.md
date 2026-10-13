@@ -164,6 +164,10 @@ npx tsx scripts/evalCDNet.ts path/to/dynamicBackground
 
 Frames are scaled to at most 320 px wide. The harness was checked for plumbing on generated JPEG/PNG data; it has not yet been run on the real dataset.
 
+### First check on real footage (no ground truth)
+
+`scripts/runFrames.ts` runs the filter on any folder of frames and prints how many frames each filter forwards, how long tracks live, and why tracks were dropped; it also saves annotated frames. It was run on OpenCV's sample pedestrian video `vtest.avi` (795 frames at 10 fps, scaled to 320x240; people walking in a car park, no trash in the scene). With the default thresholds, 61% of the track-frames in tracks lasting 20+ frames were labelled TRASH and 23% KEEP, so **the defaults wrongly drop walking pedestrians on real footage**. The main causes were the temporal gate (box jitter at low resolution) and the aspect-deformation gate. Loosening them (noise floor 10 px, erratic cutoff 0.5, aspect limit 0.8) gave 76% KEEP and 7% TRASH, but a clip with no trash cannot show what the loosened thresholds let through. The synthetic-video thresholds do not transfer; they need calibrating on real footage with both objects and trash.
+
 ## Known limitations
 
 - **Per-object tracking is new and only tested on synthetic video.** Objects that touch or cross become one blob, and the real one can inherit the trash verdict. With tracking switched off, the live path still uses one global box. The 4 px noise floor and the 0.1 temporal cutoff were tuned on synthetic clips and need real footage.
