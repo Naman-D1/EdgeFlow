@@ -229,6 +229,9 @@ export interface TrackerOptions {
   dropLeave: number;    // at or below this many drop votes a dropped track passes again
   center: 'bbox' | 'mass';
   horizon: number;      // frames of speculated path
+  mergeRatio: number;   // a blob whose area differs from the track's last box by more than this factor is a suspected merge/split (0 = off)
+  suspectMax: number;   // frames a suspected merge/split is held back before the new size is accepted as real
+  smoothAlpha: number;  // 1 = use the measured box as is; <1 blends measurement with the prediction (alpha-beta style)
   linearFit: boolean;   // temporal gate uses a windowed line-fit residual instead of one-step prediction error
   noiseFloor: number;   // px of box-position jitter the temporal gate ignores (edge flicker, quantisation)
 }
@@ -236,6 +239,7 @@ export interface TrackerOptions {
 export const DEFAULT_TRACKER_OPTS: TrackerOptions = {
   maxHistory: 24, maxCoast: 6, confirmFrames: 8, gateScale: 0.75,
   voteWindow: 5, dropEnter: 4, dropLeave: 2, center: 'bbox', horizon: 12, noiseFloor: 4, linearFit: false,
+  mergeRatio: 1.3, suspectMax: 6, smoothAlpha: 0.85,
 };
 
 interface Track {
@@ -244,6 +248,7 @@ interface Track {
   age: number;
   misses: number;
   votes: boolean[];            // true = this frame said "drop"
+  suspect: number;             // consecutive frames the measured blob looked like a merge/split
   state: TrackState;
   reason: string;
   lastDropReason: string;
@@ -312,8 +317,43 @@ export class BlobTracker {
       if (bi !== undefined) {
         const b = blobs[bi], bp = pos(b);
         t.misses = 0; t.age++;
-        this.push(t, { x: bp.x, y: bp.y, w: b.w, h: b.h });
-        this.evaluate(t, b, gate, frameArea, blockSize);
+        const last = t.hist[t.hist.length - 1];
+        const ratio = (b.w * b.h) / Math.max(1, last.w * last.h);
+        let suspected = o.mergeRatio > 0 && t.hist.length >= 3 && (ratio > o.mergeRatio || ratio < 1 / o.mergeRatio);
+        if (suspected) {
+          // A merge or split needs company: another track that just lost its blob, or a new unmatched
+          // blob, close by. A lone object whose size swings (tumbling debris) is deformation, not a merge.
+          const reach = 2 * Math.max(1.5 * blockSize, o.gateScale * Math.max(last.w, last.h, b.w, b.h));
+          let neighbour = false;
+          for (let tj = 0; tj < this.tracks.length && !neighbour; tj++) {
+            if (tj === ti || matched.has(tj)) continue;
+            const q = this.tracks[tj].hist[this.tracks[tj].hist.length - 1];
+            if (Math.hypot(q.x - bp.x, q.y - bp.y) <= reach) neighbour = true;
+          }
+          for (let bj = 0; bj < blobs.length && !neighbour; bj++) {
+            if (bj === bi || bUsed.has(bj)) continue;
+            const q = pos(blobs[bj]);
+            if (Math.hypot(q.x - bp.x, q.y - bp.y) <= reach) neighbour = true;
+          }
+          suspected = neighbour;
+        }
+        if (suspected && t.suspect < o.suspectMax) {
+          // Probable merge with / split from another object: the measured centre and size describe a
+          // different thing, so hold the old size, follow the prediction, and do not let this frame vote.
+          t.suspect++;
+          const p = this.predictNext(t);
+          this.push(t, { x: p.x, y: p.y, w: last.w, h: last.h });
+          this.evaluate(t, b, gate, frameArea, blockSize, true);
+        } else {
+          t.suspect = 0;
+          let sample = { x: bp.x, y: bp.y, w: b.w, h: b.h };
+          if (o.smoothAlpha < 1 && t.hist.length >= 2) {
+            const p = this.predictNext(t), a = o.smoothAlpha;
+            sample = { x: p.x + a * (bp.x - p.x), y: p.y + a * (bp.y - p.y), w: last.w + a * (b.w - last.w), h: last.h + a * (b.h - last.h) };
+          }
+          this.push(t, sample);
+          this.evaluate(t, b, gate, frameArea, blockSize);
+        }
         survivors.push(t);
         reports.push(this.report(t, false));
       } else {
@@ -332,7 +372,7 @@ export class BlobTracker {
       if (bUsed.has(bi)) continue;
       const b = blobs[bi], bp = pos(b);
       const t: Track = {
-        id: this.nextId++, hist: [], age: 1, misses: 0, votes: [], state: 'pending',
+        id: this.nextId++, hist: [], age: 1, misses: 0, suspect: 0, votes: [], state: 'pending',
         reason: 'PENDING (building trajectory history)', lastDropReason: '', prevAR: null,
         metrics: { vectorVariance: 0, netRatio: 1, aspectDef: 0, temporalScore: 0, temporalClass: 'warmup',
                    chaos: 0, bboxVerdict: 'warmup', areaFrac: 0, predicted: [] },
@@ -352,16 +392,16 @@ export class BlobTracker {
     if (t.hist.length > this.opts.maxHistory) t.hist.shift();
   }
 
-  private evaluate(t: Track, b: BlobObs, gate: TrackGateParams, frameArea: number, blockSize: number): void {
+  private evaluate(t: Track, b: BlobObs, gate: TrackGateParams, frameArea: number, blockSize: number, noVote = false): void {
     const o = this.opts, m = t.metrics;
 
     // legacy Stage 2 checks, on this blob only (no evidence -> no drop)
-    const vs = vectorStats(b.vectors);
+    const vs = noVote ? null : vectorStats(b.vectors);
     m.vectorVariance = vs ? vs.variance : 0;
     m.netRatio = vs ? vs.netRatio : 1;
     const ar = Math.max(blockSize, b.w) / Math.max(blockSize, b.h);
-    m.aspectDef = t.prevAR === null ? 0 : Math.abs(ar - t.prevAR);
-    t.prevAR = ar;
+    m.aspectDef = noVote || t.prevAR === null ? 0 : Math.abs(ar - t.prevAR);
+    if (!noVote) t.prevAR = ar;
 
     // windowed gates over this track's own history
     const temporal = speculate(t.hist, o.horizon, {
@@ -392,9 +432,11 @@ export class BlobTracker {
     }
 
     // vote hysteresis: asymmetric on purpose, so uncertainty resolves to PASS
-    t.votes.push(drop);
-    if (t.votes.length > o.voteWindow) t.votes.shift();
-    if (drop) t.lastDropReason = reason;
+    if (!noVote) {
+      t.votes.push(drop);
+      if (t.votes.length > o.voteWindow) t.votes.shift();
+      if (drop) t.lastDropReason = reason;
+    }
     const drops = t.votes.reduce((a, v) => a + (v ? 1 : 0), 0);
     const full = t.votes.length >= o.voteWindow;
 

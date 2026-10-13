@@ -21,6 +21,7 @@ const saveEvery = +(process.argv[4] ?? 40);
 const gate = { ...DEFAULT_FILTER_PARAMS, ...(process.env.GATE ? JSON.parse(process.env.GATE) : {}) };
 const th = { varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate.minNetDisplacement, maxAspectDeformation: gate.maxAspectDeformation };
 const eL = new OpenCVOpticalFlowEngine(), eT = new OpenCVOpticalFlowEngine();
+if (process.env.TRACKER) Object.assign(eT.getTracker().opts, JSON.parse(process.env.TRACKER)); // e.g. TRACKER='{"mergeRatio":0,"smoothAlpha":1}' for the old behaviour
 if (process.env.NF) eT.getTracker().opts.noiseFloor = +process.env.NF;
 let n = 0, motion = 0, legacyFwd = 0, trackPass = 0, trackLenient = 0, anyDrop = 0, anyTrack = 0;
 const life = new Map<number, { frames: number; pass: number; drop: number; pend: number }>();
@@ -38,7 +39,7 @@ for (const f of files) {
   const img = { data: new Uint8ClampedArray(p.data), width: p.width, height: p.height, colorSpace: 'srgb' } as ImageData;
   const L = eL.processFrame(img, 20, th);
   const t0 = performance.now();
-  const T = eT.processFrame(img, 20, th, { gate });
+  const T = eT.processFrame(img, 20, { ...th, varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate.minNetDisplacement, maxAspectDeformation: gate.maxAspectDeformation }, { gate });
   ms += performance.now() - t0;
   n++;
   if (L.hasMotion) motion++;

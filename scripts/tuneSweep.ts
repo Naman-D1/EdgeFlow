@@ -46,15 +46,32 @@ for (let t = 0; t < 160; t++) {
 }
 
 
+// The app's own virtual-camera demos (flat shapes on a dark room), so a preset cannot pass them as "keep".
+function flat(draw: (set: (x: number, y: number, v: number) => void) => void): ImageData {
+  const d = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const v = y > H * 0.65 ? 18 : 38, i = (y * W + x) * 4; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+  draw((x, y, v) => { x = Math.round(x); y = Math.round(y); if (x >= 0 && y >= 0 && x < W && y < H) { const i = (y * W + x) * 4; d[i] = d[i + 1] = d[i + 2] = v; } });
+  return { data: d, width: W, height: H, colorSpace: 'srgb' } as ImageData;
+}
+const disc = (set: (x: number, y: number, v: number) => void, cx0: number, cy0: number, r: number, v: number) => { for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r) set(cx0 + x, cy0 + y, v); };
+const rect = (set: (x: number, y: number, v: number) => void, x0: number, y0: number, w: number, h: number, v: number) => { for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) set(x0 + x, y0 + y, v); };
+const demo: Record<string, ImageData[]> = { humanDemo: [], flutterDemo: [], debrisDemo: [] };
+for (let f = 0; f < 200; f++) {
+  const t = f * 0.033;
+  demo.humanDemo.push(flat(set => { const wx = (Math.sin(t * 0.8) * 0.35 + 0.5) * W, wy = H * 0.55; rect(set, wx - 15, wy - 37, 30, 75, 150); disc(set, wx, wy - 49, 10, 245); }));
+  demo.flutterDemo.push(flat(set => disc(set, W * 0.5 + Math.sin(t * 12) * 45, H * 0.4 + Math.cos(t * 16) * 35, 14, 110)));
+  demo.debrisDemo.push(flat(set => { const dx = W * 0.5 + Math.sin(t * 1.5) * 60, sw = 40 + Math.sin(t * 8) * 28, sh = 40 + Math.cos(t * 7) * 28; rect(set, dx - sw / 2, H * 0.5 - sh / 2, sw, sh, 190); }));
+}
+
 interface Cfg {
   nf: number; erratic: number; aspect: number; variance: number; minNet: number;
-  voteWindow: number; dropEnter: number; dropLeave: number; confirm: number; gateScale: number; link: number; fit: boolean;
+  voteWindow: number; dropEnter: number; dropLeave: number; confirm: number; gateScale: number; link: number; fit: boolean; merge: number; alpha: number;
 }
 function run(frames: ImageData[], cfg: Cfg) {
   const gate = { ...DEFAULT_FILTER_PARAMS, maxErraticScore: cfg.erratic, maxAspectDeformation: cfg.aspect, varianceThreshold: cfg.variance, minNetDisplacement: cfg.minNet };
   const th = { varianceThreshold: cfg.variance, minNetDisplacement: cfg.minNet, maxAspectDeformation: cfg.aspect };
   const e = new OpenCVOpticalFlowEngine();
-  Object.assign(e.getTracker().opts, { noiseFloor: cfg.nf, voteWindow: cfg.voteWindow, dropEnter: cfg.dropEnter, dropLeave: cfg.dropLeave, confirmFrames: cfg.confirm, gateScale: cfg.gateScale, linearFit: cfg.fit });
+  Object.assign(e.getTracker().opts, { noiseFloor: cfg.nf, voteWindow: cfg.voteWindow, dropEnter: cfg.dropEnter, dropLeave: cfg.dropLeave, confirmFrames: cfg.confirm, gateScale: cfg.gateScale, linearFit: cfg.fit, mergeRatio: cfg.merge, smoothAlpha: cfg.alpha });
   // per-frame (trackId, state) so halves can be scored separately
   const per: { id: number; s: string }[][] = [];
   frames.forEach(img => { const r = e.processFrame(img, 20, th, { gate, linkRadius: cfg.link }); per.push((r.tracks ?? []).map(k => ({ id: k.id, s: k.state }))); });
@@ -69,26 +86,30 @@ function score(per: { id: number; s: string }[][], a: number, b: number) {
 }
 const synthScore = (cfg: Cfg) => {
   const k = (n: string) => score(run(synth[n], cfg), 30, 160);
-  return { person: k('person').keep, vehicle: k('vehicle').keep, clothDrop: k('cloth').trash, shakerDrop: k('shaker').trash };
+  const dk = (n: string) => score(run(demo[n], cfg), 30, 200);
+  const fl = dk('flutterDemo'), db = dk('debrisDemo');
+  return { person: k('person').keep, vehicle: k('vehicle').keep, clothDrop: k('cloth').trash, shakerDrop: k('shaker').trash, humanDemo: dk('humanDemo').keep, flutterDemoKeep: fl.keep, debrisDemoKeep: db.keep };
 };
-const guardOk = (g: ReturnType<typeof synthScore>) => g.person >= 0.95 && g.vehicle >= 0.95 && g.clothDrop >= 0.9 && g.shakerDrop >= 0.9;
+const guardOk = (g: ReturnType<typeof synthScore>) => g.person >= 0.95 && g.vehicle >= 0.95 && g.clothDrop >= 0.9 && g.shakerDrop >= 0.9 && g.humanDemo >= 0.9 && g.flutterDemoKeep <= 0.2 && g.debrisDemoKeep <= 0.35;
 
 const defaults: Cfg = { nf: 4, erratic: DEFAULT_FILTER_PARAMS.maxErraticScore, aspect: DEFAULT_FILTER_PARAMS.maxAspectDeformation, variance: DEFAULT_FILTER_PARAMS.varianceThreshold,
-  minNet: DEFAULT_FILTER_PARAMS.minNetDisplacement, voteWindow: 5, dropEnter: 4, dropLeave: 2, confirm: 8, gateScale: 0.75, link: 1, fit: false };
+  minNet: DEFAULT_FILTER_PARAMS.minNetDisplacement, voteWindow: 5, dropEnter: 4, dropLeave: 2, confirm: 8, gateScale: 0.75, link: 1, fit: false, merge: 0, alpha: 1 };
 const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
 const N = +(process.argv[3] ?? 160);
 const cands: Cfg[] = [defaults];
+for (const merge of [1.3, 1.5, 1.8, 2.2]) for (const alpha of [0.5, 0.7, 0.85, 1]) for (const fit of [false, true]) cands.push({ ...defaults, merge, alpha, fit }); // defaults + the merge/split, smoothing and line-fit options only
 for (let i = 0; i < N; i++) {
   const voteWindow = pick([3, 5, 7]);
   cands.push({ nf: pick([3, 4, 5, 6, 8]), erratic: pick([0.1, 0.2, 0.3, 0.5, 0.7]), aspect: pick([0.28, 0.5, 0.8, 1.2]), variance: pick([38, 70, 110]), minNet: pick([0.2, 0.3, 0.42]),
-    voteWindow, dropEnter: pick([voteWindow, Math.max(2, voteWindow - 1)]), dropLeave: pick([1, 2, 3]), confirm: pick([8, 12, 16]), gateScale: pick([0.5, 0.75, 1.0]), link: pick([1, 2]), fit: process.env.FIT === '1' ? true : pick([false, true]) });
+    voteWindow, dropEnter: pick([voteWindow, Math.max(2, voteWindow - 1)]), dropLeave: pick([1, 2, 3]), confirm: pick([8, 12, 16]), gateScale: pick([0.5, 0.75, 1.0]), link: pick([1, 2]), fit: process.env.FIT === '1' ? true : pick([false, true]), merge: pick([0, 1.3, 1.5, 1.8, 2.2]), alpha: process.env.ALPHA1 ? 1 : pick([1, 0.85, 0.7, 0.5]) });
 }
-const fmt = (c: Cfg) => `nf ${c.nf} erratic ${c.erratic} aspect ${c.aspect} var ${c.variance} minNet ${c.minNet} vote ${c.dropEnter}/${c.voteWindow} leave ${c.dropLeave} confirm ${c.confirm} gate ${c.gateScale} link ${c.link} fit ${c.fit ? 'on' : 'off'}`;
+if (process.env.BASE) for (const c of cands.slice(1)) Object.assign(c, JSON.parse(process.env.BASE)); // BASE='{"merge":1.3,"alpha":0.85}' pins options for the random part
+const fmt = (c: Cfg) => `nf ${c.nf} erratic ${c.erratic} aspect ${c.aspect} var ${c.variance} minNet ${c.minNet} vote ${c.dropEnter}/${c.voteWindow} leave ${c.dropLeave} confirm ${c.confirm} gate ${c.gateScale} link ${c.link} fit ${c.fit ? 'on' : 'off'} merge ${c.merge} alpha ${c.alpha}`;
 const rows = cands.map(cfg => { const per = run(real, cfg); return { cfg, A: score(per, 0, SPLIT), B: score(per, SPLIT, real.length), g: synthScore(cfg) }; });
 const val = (x: { keep: number; trash: number }) => x.keep - x.trash;
 const elig = rows.filter(r => guardOk(r.g));
-console.log(`candidates ${rows.length}, passing synthetic guard rails (person/vehicle kept >=95%, cloth and shaker dropped >=90%): ${elig.length}`);
-const show = (name: string, r: typeof rows[number]) => console.log(`  ${name.padEnd(8)} ${fmt(r.cfg)}\n           half A keep ${(100 * r.A.keep).toFixed(1)}% trash ${(100 * r.A.trash).toFixed(1)} | half B keep ${(100 * r.B.keep).toFixed(1)}% trash ${(100 * r.B.trash).toFixed(1)} | synth person ${(100 * r.g.person).toFixed(0)} vehicle ${(100 * r.g.vehicle).toFixed(0)} cloth-drop ${(100 * r.g.clothDrop).toFixed(0)} shaker-drop ${(100 * r.g.shakerDrop).toFixed(0)}`);
+console.log(`candidates ${rows.length}, passing synthetic guard rails (person/vehicle kept >=95%, cloth and shaker dropped >=90%, the app's human demo kept >=90%, its flutter demo kept <=20% and debris demo <=35%, as the defaults do): ${elig.length}`);
+const show = (name: string, r: typeof rows[number]) => console.log(`  ${name.padEnd(8)} ${fmt(r.cfg)}\n           half A keep ${(100 * r.A.keep).toFixed(1)}% trash ${(100 * r.A.trash).toFixed(1)} | half B keep ${(100 * r.B.keep).toFixed(1)}% trash ${(100 * r.B.trash).toFixed(1)} | synth person ${(100 * r.g.person).toFixed(0)} vehicle ${(100 * r.g.vehicle).toFixed(0)} cloth-drop ${(100 * r.g.clothDrop).toFixed(0)} shaker-drop ${(100 * r.g.shakerDrop).toFixed(0)} | app demos: human keep ${(100 * r.g.humanDemo).toFixed(0)} flutter keep ${(100 * r.g.flutterDemoKeep).toFixed(0)} debris keep ${(100 * r.g.debrisDemoKeep).toFixed(0)}`);
 console.log('\nTwo-fold check (pick on one half, score on the other):');
 const bestA = [...elig].sort((x, y) => val(y.A) - val(x.A))[0], bestB = [...elig].sort((x, y) => val(y.B) - val(x.B))[0];
 if (bestA) console.log(`  chosen on A -> scored on B: keep ${(100 * bestA.B.keep).toFixed(1)}% trash ${(100 * bestA.B.trash).toFixed(1)}%`);
@@ -98,3 +119,7 @@ console.log('\nTop 5 by combined real score (in-sample on the whole clip):');
 const total = (r: typeof rows[number]) => val(r.A) + val(r.B);
 [...elig].sort((x, y) => total(y) - total(x)).slice(0, 5).forEach((r, i) => show(`#${i + 1}`, r));
 console.log('\nDefaults:'); show('defaults', rows[0]);
+if (process.env.SHOW_MA) {
+  console.log('\nDefaults + merge/split and smoothing only (all candidates, guard values):');
+  rows.slice(1, 33).forEach(r => show(`m${r.cfg.merge} a${r.cfg.alpha}`, r));
+}
