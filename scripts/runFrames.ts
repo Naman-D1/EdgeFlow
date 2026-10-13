@@ -24,6 +24,7 @@ const eL = new OpenCVOpticalFlowEngine(), eT = new OpenCVOpticalFlowEngine();
 if (process.env.TRACKER) Object.assign(eT.getTracker().opts, JSON.parse(process.env.TRACKER)); // e.g. TRACKER='{"mergeRatio":0,"smoothAlpha":1}' for the old behaviour
 if (process.env.NF) eT.getTracker().opts.noiseFloor = +process.env.NF;
 let camFrames = 0;
+const dump: { f: string; keep: number; lenient: number; cam: number }[] = [];
 let n = 0, motion = 0, legacyFwd = 0, trackPass = 0, trackLenient = 0, anyDrop = 0, anyTrack = 0;
 const life = new Map<number, { frames: number; pass: number; drop: number; pend: number }>();
 let ms = 0;
@@ -48,6 +49,7 @@ for (const f of files) {
   if (L.stage2Passed) legacyFwd++;
   const tr = T.tracks ?? [];
   if (tr.length) anyTrack++;
+  dump.push({ f, keep: tr.some(k => k.state === 'pass') ? 1 : 0, lenient: tr.some(k => k.state !== 'drop') ? 1 : 0, cam: eT.cameraMotion ? 1 : 0 });
   if (tr.some(k => k.state === 'pass')) trackPass++;
   if (tr.some(k => k.state !== 'drop')) trackLenient++;
   if (tr.some(k => k.state === 'drop')) anyDrop++;
@@ -68,6 +70,7 @@ const pc = (a: number) => (100 * a / n).toFixed(1) + '%';
 console.log(`frames ${n}  engine ${(ms / n).toFixed(2)} ms/frame (tracking mode)`);
 console.log(`Stage 1 motion detected : ${pc(motion)}`);
 console.log(`legacy single-box PASS   : ${pc(legacyFwd)}`);
+if (process.env.DUMP) fs.writeFileSync(process.env.DUMP, JSON.stringify(dump));
 console.log(`camera-motion frames: ${camFrames} (${pc(camFrames)})`);
 console.log(`tracking: any KEEP track : ${pc(trackPass)}   keep-or-watching: ${pc(trackLenient)}   any TRASH track: ${pc(anyDrop)}`);
 const long = [...life.entries()].filter(([, v]) => v.frames >= 20).sort((a, b) => b[1].frames - a[1].frames);
