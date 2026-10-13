@@ -219,3 +219,17 @@ Found on a real PTZ parking-lot clip (Wikimedia, 316 s, 3163 frames at 10 fps): 
 | long tracks: KEEP share | 39.5% | 37.0% |
 
 Synthetic scenes and the vtest clip are unchanged (guard never fires there). Caveats: no ground truth, one clip, cutoff 0.5 chosen from a 0.3-0.7 sweep that barely changed the result; a large object filling over half the frame would also be skipped.
+
+## Hand-labelled spot check and the Stage 1 gate (v2.2.3)
+
+116 frames sampled at even intervals from three clips (vtest pedestrians, the PTZ parking lot, a night-storm camera) were labelled by hand and blind ("is a real person or vehicle moving?"), see `hand-labels.csv`. One labeller, one sample: a spot check, not a benchmark.
+
+The Stage 1 gate (share of pixels that must change before blobs are extracted) was hard-coded at 0.45% and hid small, distant objects. It is now `motionPercent` (tracking path only; the legacy path keeps 0.45). Sweep on the 116 labels:
+
+| motionPercent | KEEP recall | junk skipped | KEEP-or-watching recall | junk skipped |
+|---|---|---|---|---|
+| 0.45 (old) | 57% | 89% | 67% | 66% |
+| **0.25 (new default)** | 60% | 79% | 75% | 59% |
+| 0.12 | 65% | 82% | 80% | 59% |
+
+0.12 scores better on the labels but lets the synthetic small-flutter scene through (94% pass), so 0.25 is the default. MOG2 + blob on the same frames: recall 80%, junk skipped 46%. All synthetic guards and the app demo scenes still pass at 0.25. Remaining gap: small distant objects (parking lot recall is still low) and debris at night (storm clip is far from empty).

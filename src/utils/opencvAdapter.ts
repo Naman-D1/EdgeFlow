@@ -58,6 +58,10 @@ export interface TrackingOptions {
   linkRadius?: number;
   /** Fraction of active macroblocks above which the frame is treated as camera motion (default 0.5). */
   globalMotionFrac?: number;
+  /** Stage 1 gate: % of pixels that must change before blobs are extracted (default 0.25; the single-box legacy path keeps 0.45). */
+  motionPercent?: number;
+  /** Changed pixels a cell needs to count as active in blob extraction (default 3). */
+  minCellPixels?: number;
 }
 
 export class OpenCVOpticalFlowEngine {
@@ -199,7 +203,7 @@ export class OpenCVOpticalFlowEngine {
     }
 
     const pixelShiftPercent = (changedPixelsCount / totalPixels) * 100;
-    const hasMotion = pixelShiftPercent > 0.45; // at least 0.45% of scene moving
+    const hasMotion = pixelShiftPercent > (tracking?.motionPercent ?? 0.25); // share of scene that must move (Stage 1)
 
     const vectors: RealFlowResult['vectors'] = [];
 
@@ -311,7 +315,7 @@ export class OpenCVOpticalFlowEngine {
       } else {
         this.cameraMotion = false;
         const blobs = hasMotion
-          ? extractBlobs(grid, { linkRadius: tracking.linkRadius })
+          ? extractBlobs(grid, { linkRadius: tracking.linkRadius, minCellPixels: tracking.minCellPixels })
           : [];
         trackReports = this.tracker.update(blobs, tracking.gate, totalPixels, blockSize);
       }

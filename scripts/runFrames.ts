@@ -41,7 +41,7 @@ for (const f of files) {
   const img = { data: new Uint8ClampedArray(p.data), width: p.width, height: p.height, colorSpace: 'srgb' } as ImageData;
   const L = eL.processFrame(img, 20, th);
   const t0 = performance.now();
-  const T = eT.processFrame(img, 20, { ...th, varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate.minNetDisplacement, maxAspectDeformation: gate.maxAspectDeformation }, { gate, globalMotionFrac: process.env.GMF ? +process.env.GMF : undefined });
+  const T = eT.processFrame(img, 20, { ...th, varianceThreshold: gate.varianceThreshold, minNetDisplacement: gate.minNetDisplacement, maxAspectDeformation: gate.maxAspectDeformation }, { gate, globalMotionFrac: process.env.GMF ? +process.env.GMF : undefined, motionPercent: process.env.MP ? +process.env.MP : undefined, minCellPixels: process.env.MCP ? +process.env.MCP : undefined });
   ms += performance.now() - t0;
   n++;
   if (eT.cameraMotion) camFrames++;
