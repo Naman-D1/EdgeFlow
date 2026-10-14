@@ -1,4 +1,4 @@
-***Who's who?***
+EdgeFlow
 
 A browser-based prototype of a motion-filtering cascade for edge cameras: cheap motion cues decide whether an expensive AI model needs to run at all, so a wind-blown bag or a moth doesn't wake the heavy model but a person or vehicle does.
 
