@@ -245,3 +245,6 @@ Check: the 267-frame night-storm clip, analysed in headless Chromium at 4x, gave
 
 ### Object count (v2.2.5)
 The video results panel now shows **Moving objects counted** (distinct tracks that were ever KEEP) and **Most at once** (peak KEEP tracks in one frame). EdgeFlow does not recognise people, so this is a count of filtered moving objects. On the pedestrian test clip the total over-counts (51 tracks over 600 frames, because tracks break and restart) and the peak (5) is the more trustworthy number; on the parking-lot clip it gave 3 / 2.
+
+### Ablation (v2.2.5)
+`npx tsx scripts/synAblation.ts <framesDir>` switches off one component at a time (temporal speculation, size gate, merge/split, voting, angular variance, net displacement, aspect deformation) and reports the synthetic-scene scores. On the real labelled frames, temporal speculation changes little but on the synthetic scenes removing it drops cloth rejection from 100% to 35%; the camera-motion guard accounts for about 13 points of junk skipped; removing the size gate, angular-variance or net-displacement tests changed nothing on this data.
