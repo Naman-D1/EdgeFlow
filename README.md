@@ -248,3 +248,5 @@ The video results panel now shows **Moving objects counted** (distinct tracks th
 
 ### Ablation (v2.2.5)
 `npx tsx scripts/synAblation.ts <framesDir>` switches off one component at a time (temporal speculation, size gate, merge/split, voting, angular variance, net displacement, aspect deformation) and reports the synthetic-scene scores. On the real labelled frames, temporal speculation changes little but on the synthetic scenes removing it drops cloth rejection from 100% to 35%; the camera-motion guard accounts for about 13 points of junk skipped; removing the size gate, angular-variance or net-displacement tests changed nothing on this data.
+
+See [docs/thresholds.md](docs/thresholds.md) for every threshold and tracker parameter.
