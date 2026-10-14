@@ -633,6 +633,9 @@ export const PipelineSimulator: React.FC<PipelineSimulatorProps> = ({
         temporalClass: 'warmup',
         temporalConfidence: 0,
         predictedPath: [],
+        bboxChaos: 0,
+        bboxVerdict: 'warmup',
+        bboxAreaFrac: 0,
         dropReason: 'MANUAL_INJECTION',
         inferenceTriggered: true,
       };
@@ -949,6 +952,29 @@ export const PipelineSimulator: React.FC<PipelineSimulatorProps> = ({
                         }`}
                         style={{
                           width: `${Math.min(100, (selectedObject.temporalScore / (filterParams.maxErraticScore * 2)) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Metric 5 (v2.1): BBox geometric stability */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">BBox Geometric Chaos:</span>
+                      <span className="font-mono tabular-nums text-slate-200">
+                        {selectedObject.bboxChaos.toFixed(3)}
+                        <span className="text-slate-500 text-[10px] ml-1">
+                          / max {filterParams.maxBBoxChaos.toFixed(2)}{filterParams.enableRigidity ? '' : ' (gate off)'} · {selectedObject.bboxVerdict.replace('_', ' ')} · {(selectedObject.bboxAreaFrac * 100).toFixed(2)}% of frame{filterParams.enableSizeGate ? '' : ' (size gate off)'}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          !filterParams.enableRigidity ? 'bg-slate-500' : selectedObject.bboxChaos >= filterParams.maxBBoxChaos ? 'bg-rose-500' : 'bg-violet-500'
+                        }`}
+                        style={{
+                          width: `${Math.min(100, (selectedObject.bboxChaos / (filterParams.maxBBoxChaos * 2)) * 100)}%`,
                         }}
                       />
                     </div>

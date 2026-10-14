@@ -1,5 +1,10 @@
 // OpenCV.js integration & real-time hardware-accelerated optical flow adapter
 
+import {
+  BlobTracker, CellGrid, TrackGateParams, TrackReport,
+  createGrid, resetGrid, extractBlobs,
+} from './blobTracker';
+
 declare global {
   interface Window {
     cv: any;
@@ -30,6 +35,33 @@ export interface RealFlowResult {
   verdict: 'PASS to AI' | 'DROP (Noise)' | 'IDLE';
   dropReason: string;
   isOpenCvBackend: boolean;
+  // Per-object tracking (only populated when a tracking option is passed to processFrame)
+  trackingMode?: boolean;
+  tracks?: TrackReport[];
+}
+
+// Collapse per-track states into the legacy single verdict so existing telemetry still makes sense:
+// PASS if anything is worth keeping; DROP only if everything visible is confidently trash.
+function summarizeTracks(tracks: TrackReport[]): Pick<RealFlowResult, 'stage2Passed' | 'verdict' | 'dropReason'> | null {
+  if (tracks.length === 0) return null;
+  const keep = tracks.filter((t) => t.state === 'pass');
+  if (keep.length > 0) {
+    return { stage2Passed: true, verdict: 'PASS to AI', dropReason: `${keep.length} of ${tracks.length} tracked object(s) kept` };
+  }
+  const watching = tracks.some((t) => t.state === 'pending');
+  if (watching) return { stage2Passed: false, verdict: 'IDLE', dropReason: 'WATCHING (building track history)' };
+  return { stage2Passed: false, verdict: 'DROP (Noise)', dropReason: tracks[0].reason };
+}
+
+export interface TrackingOptions {
+  gate: TrackGateParams;
+  linkRadius?: number;
+  /** Fraction of active macroblocks above which the frame is treated as camera motion (default 0.5). */
+  globalMotionFrac?: number;
+  /** Stage 1 gate: % of pixels that must change before blobs are extracted (default 0.25; the single-box legacy path keeps 0.45). */
+  motionPercent?: number;
+  /** Changed pixels a cell needs to count as active in blob extraction (default 3). */
+  minCellPixels?: number;
 }
 
 export class OpenCVOpticalFlowEngine {
@@ -38,6 +70,8 @@ export class OpenCVOpticalFlowEngine {
   private prevLumaBuffer: Uint8ClampedArray | null = null;
   private historyTrajectories: { x: number; y: number; vx: number; vy: number; ar: number }[] = [];
   private prevAspectRatio: number = 1.0;
+  private tracker = new BlobTracker();
+  private grid: CellGrid | null = null;
 
   public isOpenCvReady(): boolean {
     return typeof window !== 'undefined' && !!window.cv && !!window.cv.Mat && !!window.cv.calcOpticalFlowFarneback;
@@ -63,6 +97,23 @@ export class OpenCVOpticalFlowEngine {
     }
     this.prevLumaBuffer = null;
     this.historyTrajectories = [];
+    this.tracker.reset();
+    this.grid = null;
+  }
+
+  public cameraMotion = false;
+
+  /** Forget the previous frame and all tracks (e.g. when a new video starts). */
+  public resetState(): void {
+    this.prevLumaBuffer = null;
+    this.historyTrajectories = [];
+    this.tracker.reset();
+    this.grid = null;
+    this.cameraMotion = false;
+  }
+
+  public getTracker(): BlobTracker {
+    return this.tracker;
   }
 
   /**
@@ -75,7 +126,8 @@ export class OpenCVOpticalFlowEngine {
       varianceThreshold: number;
       minNetDisplacement: number;
       maxAspectDeformation: number;
-    }
+    },
+    tracking?: TrackingOptions
   ): RealFlowResult {
     const width = currImageData.width;
     const height = currImageData.height;
@@ -120,6 +172,18 @@ export class OpenCVOpticalFlowEngine {
     let maxX = 0;
     let maxY = 0;
 
+    const cols = Math.floor(width / blockSize);
+    const rows = Math.floor(height / blockSize);
+    let grid: CellGrid | null = null;
+    if (tracking) {
+      if (!this.grid || this.grid.cols !== cols || this.grid.rows !== rows || this.grid.blockSize !== blockSize) {
+        this.grid = createGrid(cols, rows, blockSize);
+      } else {
+        resetGrid(this.grid);
+      }
+      grid = this.grid;
+    }
+
     for (let i = 0; i < totalPixels; i++) {
       const diff = Math.abs(luma[i] - prevLuma[i]);
       totalAbsDiff += diff;
@@ -127,6 +191,19 @@ export class OpenCVOpticalFlowEngine {
         changedPixelsCount++;
         const px = i % width;
         const py = Math.floor(i / width);
+        if (grid) {
+          const gc = Math.floor(px / blockSize), gr = Math.floor(py / blockSize);
+          if (gc < cols && gr < rows) {
+            const ci = gr * cols + gc;
+            grid.count[ci]++;
+            if (px < grid.minX[ci]) grid.minX[ci] = px;
+            if (px > grid.maxX[ci]) grid.maxX[ci] = px;
+            if (py < grid.minY[ci]) grid.minY[ci] = py;
+            if (py > grid.maxY[ci]) grid.maxY[ci] = py;
+            grid.sumX[ci] += px;
+            grid.sumY[ci] += py;
+          }
+        }
         if (px < minX) minX = px;
         if (px > maxX) maxX = px;
         if (py < minY) minY = py;
@@ -135,15 +212,13 @@ export class OpenCVOpticalFlowEngine {
     }
 
     const pixelShiftPercent = (changedPixelsCount / totalPixels) * 100;
-    const hasMotion = pixelShiftPercent > 0.45; // at least 0.45% of scene moving
+    const hasMotion = pixelShiftPercent > (tracking?.motionPercent ?? 0.25); // share of scene that must move (Stage 1)
 
     const vectors: RealFlowResult['vectors'] = [];
 
     // Stage 2: Hardware ISP Macroblock Vector Estimation
     // If OpenCV is loaded, we can use OpenCV Farnebäck / dense flow.
     // In all cases, we compute block-matching vectors (SAD) across the grid.
-    const cols = Math.floor(width / blockSize);
-    const rows = Math.floor(height / blockSize);
     const searchRadius = 8; // ±8 pixels search window
 
     let sumVx = 0;
@@ -216,6 +291,12 @@ export class OpenCVOpticalFlowEngine {
               mag,
             });
 
+            if (grid) {
+              const ci = r * cols + c;
+              grid.active[ci] = 1;
+              grid.vdx[ci] = bestDx;
+              grid.vdy[ci] = bestDy;
+            }
             sumVx += bestDx;
             sumVy += bestDy;
             sumMag += mag;
@@ -227,6 +308,27 @@ export class OpenCVOpticalFlowEngine {
 
     // Save current frame as previous for next iteration
     this.prevLumaBuffer = luma;
+
+    // Per-object path: group cells into blobs, track them, gate each track on its own history.
+    // Runs every frame (even idle ones) so tracks coast and age correctly.
+    let trackReports: TrackReport[] | undefined;
+    if (tracking && grid) {
+      // Camera-motion guard: when most of the frame is active the camera itself moved
+      // (PTZ, shake). Per-object history is meaningless then, so drop it and start fresh.
+      const frac = vectors.length / Math.max(1, rows * cols);
+      const camCut = tracking.globalMotionFrac ?? 0.5;
+      if (frac > camCut) {
+        this.tracker.reset();
+        this.cameraMotion = true;
+        trackReports = [];
+      } else {
+        this.cameraMotion = false;
+        const blobs = hasMotion
+          ? extractBlobs(grid, { linkRadius: tracking.linkRadius, minCellPixels: tracking.minCellPixels })
+          : [];
+        trackReports = this.tracker.update(blobs, tracking.gate, totalPixels, blockSize);
+      }
+    }
 
     if (!hasMotion || vectors.length < 2) {
       return {
@@ -242,6 +344,8 @@ export class OpenCVOpticalFlowEngine {
         verdict: 'IDLE',
         dropReason: 'NO_SIGNIFICANT_MOTION (Stage 1 Filtered)',
         isOpenCvBackend: useOpenCV,
+        trackingMode: !!tracking,
+        tracks: trackReports,
       };
     }
 
@@ -334,7 +438,10 @@ export class OpenCVOpticalFlowEngine {
       stage2Passed,
       verdict,
       dropReason,
+      ...(trackReports ? summarizeTracks(trackReports) ?? {} : {}),
       isOpenCvBackend: useOpenCV,
+      trackingMode: !!tracking,
+      tracks: trackReports,
     };
   }
 }

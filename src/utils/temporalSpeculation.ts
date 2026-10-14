@@ -27,8 +27,13 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 export function speculate(
   hist: TrackSample[],
   horizon = 10,
-  opts = { minFrames: 8, erraticCut: 0.1, minStraight: 0.45 }
+  opts: { minFrames: number; erraticCut: number; minStraight: number; noiseFloor?: number; linearFit?: boolean } =
+    { minFrames: 8, erraticCut: 0.1, minStraight: 0.45 }
 ): TemporalProfile {
+  // noiseFloor (px): expected measurement jitter of the position. 0 for noiseless tracks (simulator).
+  // Real boxes flicker by a pixel or two, which would make slow smooth movers look erratic;
+  // below the floor we cannot tell smooth from erratic, so we treat it as smooth (benefit of doubt).
+  const floor = opts.noiseFloor ?? 0;
   const n = hist.length;
   if (n < opts.minFrames) {
     return { relPredError: 0, turnRate: 0, straightness: 1, erraticScore: 0.5,
@@ -47,10 +52,12 @@ export function speculate(
   for (let i = 1; i < steps.length; i++) {
     errSum += Math.hypot(steps[i].dx - steps[i-1].dx, steps[i].dy - steps[i-1].dy);
   }
-  const relPredError = errSum / (steps.length - 1) / (meanStep + 1e-6);
+  // second difference of i.i.d. position noise σ has magnitude ≈ 2.4σ per step; remove that expectation
+  const meanErr = Math.max(0, errSum / (steps.length - 1) - 2.4 * floor);
+  const relPredError = meanErr / (meanStep + 1e-6);
 
   // 2) turn rate on frames that are actually moving
-  const minMove = 0.15; // px/frame, matches Stage 1 speed gate
+  const minMove = Math.max(0.15, 2 * floor); // px/frame; below the noise floor a heading is meaningless
   const turns: number[] = [];
   for (let i = 1; i < steps.length; i++) {
     if (stepLen[i] > minMove && stepLen[i-1] > minMove) {
@@ -67,7 +74,24 @@ export function speculate(
   const straightness = path > 0 ? Math.min(1, net / path) : 0;
 
   // combine: prediction error and turning drive the score
-  const sPred = clamp01((relPredError - 0.05) / 0.45);
+  let sPred = clamp01((relPredError - 0.05) / 0.45);
+  if (opts.linearFit) {
+    // Windowed straight-line fit. One-step prediction error amplifies box jitter (a second difference
+    // of noisy positions); the residual of a line fitted over the whole window averages it out, while
+    // real erratic motion still leaves a large residual relative to how far the object actually went.
+    const w = Math.min(n, 16), h0 = n - w;
+    let mt = 0, mx = 0, my = 0;
+    for (let i = 0; i < w; i++) { mt += i; mx += hist[h0 + i].x; my += hist[h0 + i].y; }
+    mt /= w; mx /= w; my /= w;
+    let stt = 0, stx = 0, sty = 0;
+    for (let i = 0; i < w; i++) { stt += (i - mt) ** 2; stx += (i - mt) * (hist[h0 + i].x - mx); sty += (i - mt) * (hist[h0 + i].y - my); }
+    const bx = stx / stt, by = sty / stt;
+    let ss = 0;
+    for (let i = 0; i < w; i++) ss += (hist[h0 + i].x - (mx + bx * (i - mt))) ** 2 + (hist[h0 + i].y - (my + by * (i - mt))) ** 2;
+    const rms = Math.max(0, Math.sqrt(ss / w) - 0.5 * floor);
+    const disp = Math.hypot(bx, by) * (w - 1);
+    sPred = clamp01((rms / (disp + 2 * floor + 1e-6) - 0.1) / 0.4);
+  }
   const sTurn = clamp01(turnRate / 0.8);
   const erraticScore = 0.65 * sPred + 0.35 * sTurn;
 
