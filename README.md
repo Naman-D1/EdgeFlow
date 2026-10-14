@@ -2,7 +2,7 @@
 
 A browser-based prototype of a **motion-filtering cascade for edge cameras**: cheap motion cues decide whether an expensive AI model needs to run at all, so a wind-blown bag or a moth doesn't wake the heavy model but a person or vehicle does.
 
-**Current version: v2.1** — temporal speculation (v2) plus a bounding-box rigidity & size layer (v2.1). See [What's new in v2](#whats-new-in-v2-temporal-speculation) and [v2.1: BBox rigidity](#v21-bbox-rigidity--geometric-stability).
+**Current version: v2.2.5** — temporal speculation (v2), bounding-box rigidity & size layer (v2.1), per-object blob tracker (v2.2), camera-motion guard (v2.2.2), configurable Stage 1 gate (v2.2.3), video-file analysis (v2.2.4) and moving-object count (v2.2.5). See the sections below.
 
 > The project is a React + TypeScript + Vite app. Earlier versions of this README described a Python/OpenCV script (`edge_motion_filter.py`); that script is not in this repository. See [History](#history).
 
