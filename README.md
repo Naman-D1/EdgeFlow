@@ -8,7 +8,7 @@ A browser-based prototype of a **motion-filtering cascade for edge cameras**: ch
 
 ---
 
-## How the cascade works
+## How the cascade works:
 
 ```
 Frame ──► Stage 1: pixel change ──► Stage 2: motion heuristics ──► Stage 3: heavy AI
